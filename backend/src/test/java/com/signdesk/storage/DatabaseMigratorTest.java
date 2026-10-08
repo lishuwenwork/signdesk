@@ -15,6 +15,26 @@ class DatabaseMigratorTest {
     @TempDir Path directory;
 
     @Test
+    void upgradesV2AndPreservesTemplatesOnRepeatedStartup() throws Exception {
+        var source = new SQLiteDataSource();
+        source.setUrl("jdbc:sqlite:" + directory.resolve("v2.db"));
+        var jdbc = new JdbcTemplate(source);
+        try (var connection = source.getConnection()) {
+            ScriptUtils.executeSqlScript(connection, new ClassPathResource("db/V1.sql"));
+            ScriptUtils.executeSqlScript(connection, new ClassPathResource("db/V2.sql"));
+        }
+        jdbc.execute("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+        jdbc.update("INSERT INTO schema_migrations VALUES(2,'fixture')");
+        jdbc.update("INSERT INTO platforms(id,name) VALUES('123','平台')");
+        new DatabaseMigrator(source, jdbc);
+        jdbc.update("INSERT INTO request_templates(id,platform_id,name,rules_json) VALUES('456','123','签到','{}')");
+        new DatabaseMigrator(source, jdbc);
+        assertEquals(3, jdbc.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
+        assertEquals("签到", jdbc.queryForObject("SELECT name FROM request_templates", String.class));
+        assertEquals(1, jdbc.queryForObject("SELECT version FROM request_templates", Integer.class));
+    }
+
+    @Test
     void upgradesExistingV1DataAndCanBeRunAgain() throws Exception {
         var source = new SQLiteDataSource();
         source.setUrl("jdbc:sqlite:" + directory.resolve("legacy.db"));
@@ -28,7 +48,8 @@ class DatabaseMigratorTest {
         jdbc.update("UPDATE settings SET timeout_seconds=60,version=9");
         new DatabaseMigrator(source, jdbc);
         new DatabaseMigrator(source, jdbc);
-        assertEquals(2, jdbc.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
+        assertEquals(3, jdbc.queryForObject("SELECT MAX(version) FROM schema_migrations", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM request_templates", Integer.class));
         assertEquals("既有平台", jdbc.queryForObject("SELECT name FROM platforms", String.class));
         var settings = jdbc.queryForMap("SELECT * FROM settings");
         assertEquals(60, settings.get("timeout_seconds"));

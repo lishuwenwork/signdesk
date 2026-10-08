@@ -1,9 +1,8 @@
 package com.signdesk.platform;
 
-import cn.hutool.core.util.IdUtil;
-
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.signdesk.common.ApiException;
+import com.signdesk.common.Ids;
 import com.signdesk.common.Json;
 import com.signdesk.engine.CurlParser;
 import com.signdesk.engine.RequestSpec;
@@ -66,10 +65,57 @@ public class CatalogService {
         return list;
     }
 
+    public List<Map<String, Object>> templates(String platformId) {
+        db.one("SELECT id FROM platforms WHERE id=?", platformId);
+        var templates = db.rows(
+                "SELECT * FROM request_templates WHERE platform_id=? ORDER BY rowid", platformId);
+        for (var template : templates) {
+            template.put("rules", Json.read(Db.text(template, "rulesJson"), ResultRules.class));
+            template.remove("rulesJson");
+        }
+        return templates;
+    }
+
+    @Transactional
+    public String addTemplate(String platformId, String name, ResultRules rules) {
+        db.one("SELECT id FROM platforms WHERE id=?", platformId);
+        name = templateName(name);
+        rules = ResultRules.validate(rules);
+        String id = Ids.next();
+        db.update(
+                "INSERT INTO request_templates(id,platform_id,name,rules_json) VALUES(?,?,?,?)",
+                id, platformId, name, Json.write(rules));
+        return id;
+    }
+
+    @Transactional
+    public void updateTemplate(
+            String platformId, String id, String name, ResultRules rules, int version) {
+        name = templateName(name);
+        rules = ResultRules.validate(rules);
+        db.one("SELECT id FROM request_templates WHERE id=? AND platform_id=?", id, platformId);
+        if (db.update(
+                        "UPDATE request_templates SET name=?,rules_json=?,version=version+1"
+                                + " WHERE id=? AND platform_id=? AND version=?",
+                        name, Json.write(rules), id, platformId, version)
+                != 1) conflict();
+    }
+
+    @Transactional
+    public void deleteTemplate(String platformId, String id) {
+        if (db.update("DELETE FROM request_templates WHERE id=? AND platform_id=?", id, platformId)
+                != 1) throw new ApiException(404, "模板不存在或不属于此平台");
+    }
+
+    private static String templateName(String name) {
+        if (name == null || name.isBlank() || name.length() > 60)
+            throw new ApiException("模板名称需为 1～60 字符");
+        return name.trim();
+    }
+
     @Transactional
     public String addPlatform(String name, String note, boolean enabled) {
         Platform p = new Platform();
-        p.id = IdUtil.fastSimpleUUID();
         p.name = name.trim();
         p.note = note == null ? "" : note;
         p.enabled = enabled ? 1 : 0;
@@ -99,7 +145,7 @@ public class CatalogService {
     @Transactional
     public String addAccount(String platformId, String alias, boolean enabled) {
         db.one("SELECT id FROM platforms WHERE id=?", platformId);
-        String id = IdUtil.fastSimpleUUID();
+        String id = Ids.next();
         db.update(
                 "INSERT INTO accounts(id,platform_id,alias,enabled) VALUES(?,?,?,?)",
                 id,
@@ -127,7 +173,7 @@ public class CatalogService {
         db.one("SELECT id FROM accounts WHERE id=?", accountId);
         var parsed = parser.parse(curl);
         rules = ResultRules.validate(rules);
-        String id = IdUtil.fastSimpleUUID();
+        String id = Ids.next();
         db.update(
                 "INSERT INTO requests(id,account_id,name,enabled,rules_json,safe_host,method)"
                         + " VALUES(?,?,?,?,?,?,?)",

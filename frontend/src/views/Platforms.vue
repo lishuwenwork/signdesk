@@ -3,6 +3,7 @@ import { computed, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, report, periodic, confirm, execute } from '../api'
 import RequestDialog from '../components/RequestDialog.vue'
+import RequestTemplatesDialog from '../components/RequestTemplatesDialog.vue'
 const platforms = ref([]),
   selectedId = ref(''),
   error = ref('')
@@ -12,7 +13,8 @@ const platformDialog = ref(false),
   saving = ref(false)
 const platformForm = reactive({ id: '', name: '', note: '', enabled: true, version: 1 })
 const accountForm = reactive({ id: '', alias: '', enabled: true, version: 1 })
-const requestDialog = reactive({ visible: false, mode: 'new', accountId: '', request: null })
+const requestDialog = reactive({ visible: false, mode: 'new', platformId: '', accountId: '', request: null })
+const templatesDialog = reactive({ visible: false, platformId: '', seed: null })
 async function load() {
   try {
     platforms.value = await api('/platforms')
@@ -77,7 +79,7 @@ async function saveAccount() {
 }
 async function remove(kind, item) {
   const label = {
-    platforms: '平台和所有账号、请求、计划及记录',
+    platforms: '平台和所有账号、请求、接口模板、计划及记录',
     accounts: '账号和所有请求及记录',
     requests: '请求和其历史记录',
   }[kind]
@@ -99,7 +101,14 @@ async function toggleRequest(request) {
   }
 }
 function openRequest(accountId, mode = 'new', request = null) {
-  Object.assign(requestDialog, { accountId, mode, request, visible: true })
+  Object.assign(requestDialog, { platformId: selectedId.value, accountId, mode, request, visible: true })
+}
+function openTemplates(request = null) {
+  Object.assign(templatesDialog, {
+    platformId: selectedId.value,
+    seed: request ? { name: request.name, rules: request.rules } : null,
+    visible: true,
+  })
 }
 </script>
 <template>
@@ -148,6 +157,7 @@ function openRequest(accountId, mode = 'new', request = null) {
           <el-button type="primary" :disabled="!selected.enabled" @click="execute('platform', selected.id)"
             >执行此平台</el-button
           ><el-button @click="editAccount()">＋ 添加账号</el-button
+          ><el-button @click="openTemplates()">接口模板</el-button
           ><RouterLink to="/schedules"><el-button>设置计划</el-button></RouterLink>
         </div>
       </div>
@@ -199,6 +209,8 @@ function openRequest(accountId, mode = 'new', request = null) {
                     >更新 cURL</el-dropdown-item
                   ><el-dropdown-item @click="openRequest(account.id, 'rules', request)"
                     >编辑名称 / 规则</el-dropdown-item
+                  ><el-dropdown-item @click="openTemplates(request)"
+                    >保存为接口模板</el-dropdown-item
                   ><el-dropdown-item @click="openRequest(account.id, 'view', request)"
                     >查看完整请求</el-dropdown-item
                   ><el-dropdown-item
@@ -251,8 +263,14 @@ function openRequest(accountId, mode = 'new', request = null) {
   <RequestDialog
     v-model="requestDialog.visible"
     :mode="requestDialog.mode"
+    :platform-id="requestDialog.platformId"
     :account-id="requestDialog.accountId"
     :request="requestDialog.request"
     @saved="load"
+  />
+  <RequestTemplatesDialog
+    v-model="templatesDialog.visible"
+    :platform-id="templatesDialog.platformId"
+    :seed="templatesDialog.seed"
   />
 </template>

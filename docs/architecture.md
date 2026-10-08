@@ -15,7 +15,7 @@
 | common.ApiController / Errors | REST 输入校验、安全错误摘要和管理接口 |
 | config.StorageConfig | 数据源、外部数据目录、Clock 与 Spring TaskScheduler |
 | config.RequestBoundary | JSON 写入、同来源检查、禁止缓存和响应头 |
-| platform.CatalogService | 平台、账号、请求 CRUD、乐观版本冲突、请求版本保存 |
+| platform.CatalogService | 平台、账号、请求与接口规则模板 CRUD、乐观版本冲突、请求版本保存 |
 | engine.CurlParser / RequestSpec | 安全分词、cURL 语义、诊断和防御性复制 |
 | engine.HutoolRequestExecutor | Hutool 实际发送、原始 URL 连接、独立 Cookie、TLS、总期限、响应上限和受控重定向 |
 | engine.ResultRules | JSON 路径／类型判断、文本包含、HTTP 与业务分类 |
@@ -29,12 +29,13 @@
 
 ## 数据模型
 
-数据库初始化脚本 `backend/src/main/resources/db/V1.sql` 是字段与约束的权威定义。
+数据库迁移脚本 `backend/src/main/resources/db/V*.sql` 是字段与约束的权威定义，当前顺序执行至 V3。
 
 | 表 | 用途 |
 |---|---|
 | platforms / accounts / requests | 分组、启用、排序、规则、当前版本与凭证暂停 |
 | request_revisions | 按请求 ID / 版本保存认证加密的完整快照 |
+| request_templates | 平台下多份名称／结果规则模板，不保存 cURL 或账号凭证 |
 | platform_schedules | 一个平台一个计划，多个时间点、星期、时区、生效时间 |
 | run_batches | 触发来源、UTC 时刻、业务日期、计划快照、取消和批次状态 |
 | run_items | 冻结请求版本、结果规则、执行顺序、状态和安全摘要 |
@@ -73,6 +74,8 @@ AES-GCM 认证数据绑定请求 ID 和 revision，保存原始 cURL 与结构�
 管理接口前缀 `/api`，契约与实际映射见 ApiController 和 BackupController。范围包括平台／账号／请求、解析、规则试算、计划、执行、批次／取消、记录、设置、概览、健康和备份。
 
 Vue 使用 hash 路由。概览每 2 秒刷新，记录每 3 秒、平台每 4 秒、其他状态每 5 秒；页面卸载停止轮询，异常连接不会在后台无限弹窗。轮询只显示状态，不驱动调度。凭证不写浏览器持久存储。
+
+接口规则模板通过平台范围的 `/api/platforms/{platformId}/templates` 接口管理，支持乐观版本更新。前端请求与模板共用规则编辑器；选择模板只填写名称和规则，仍要求输入当前账号的完整 cURL。请求保存独立规则副本，不持有模板外键，模板变更不会改写请求或队列快照。普通配置与加密备份均包含模板；缺失模板字段按空列表导入，恢复时统一校验所属平台。
 
 ## 当前边界
 

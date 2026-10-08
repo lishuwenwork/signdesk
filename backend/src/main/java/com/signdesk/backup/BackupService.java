@@ -65,6 +65,8 @@ public class BackupService {
     public record PlatformEntry(
             String id, String name, String note, boolean enabled, int sortOrder) {}
 
+    public record TemplateEntry(String id, String platformId, String name, ResultRules rules) {}
+
     public record ScheduleEntry(String platformId, ScheduleSpec spec) {}
 
     public record Completion(String requestId, String businessDate) {}
@@ -78,7 +80,12 @@ public class BackupService {
             List<RequestEntry> requests,
             List<ScheduleEntry> schedules,
             List<Completion> completed,
-            List<Completion> pending) {}
+            List<Completion> pending,
+            List<TemplateEntry> templates) {
+        public Snapshot {
+            templates = templates == null ? List.of() : templates;
+        }
+    }
 
     public BackupService(
             Db db,
@@ -218,6 +225,13 @@ public class BackupService {
                                                                                     "businessDate")))
                                                     .toList()
                                             : List.<Completion>of();
+                            var templates = db.rows("SELECT * FROM request_templates ORDER BY rowid")
+                                    .stream()
+                                    .map(r -> new TemplateEntry(
+                                            Db.text(r, "id"), Db.text(r, "platformId"),
+                                            Db.text(r, "name"),
+                                            Json.read(Db.text(r, "rulesJson"), ResultRules.class)))
+                                    .toList();
                             var settingsRow = db.one("SELECT * FROM settings WHERE id=1");
                             return new Snapshot(
                                     1,
@@ -237,7 +251,8 @@ public class BackupService {
                                     requests,
                                     schedules,
                                     completed,
-                                    pending);
+                                    pending,
+                                    templates);
                         });
         if (Json.write(snapshot).getBytes(StandardCharsets.UTF_8).length > 8388608)
             throw new ApiException("备份内容超过 8 MiB，不能生成可导入的文件");
@@ -326,7 +341,8 @@ public class BackupService {
                 || s.pending() == null
                 || s.platforms().size() > 1000
                 || s.accounts().size() > 10000
-                || s.requests().size() > 10000) throw new ApiException("备份版本或对象数量不支持");
+                || s.requests().size() > 10000
+                || s.templates().size() > 10000) throw new ApiException("备份版本或对象数量不支持");
         Set<String> platforms = new HashSet<>(),
                 accounts = new HashSet<>(),
                 requests = new HashSet<>(),
@@ -336,6 +352,14 @@ public class BackupService {
             checkName(p.name(), 40);
             if (!platforms.add(p.id())) throw new IllegalArgumentException();
             if (p.note() != null && p.note().length() > 500) throw new IllegalArgumentException();
+        }
+        Set<String> templateIds = new HashSet<>();
+        for (var template : s.templates()) {
+            checkId(template.id());
+            checkName(template.name(), 60);
+            if (!platforms.contains(template.platformId()) || !templateIds.add(template.id()))
+                throw new IllegalArgumentException();
+            ResultRules.validate(template.rules());
         }
         for (var a : s.accounts()) {
             checkId(a.id());
@@ -375,6 +399,8 @@ public class BackupService {
                 s.accounts().size(),
                 "requests",
                 s.requests().size(),
+                "templates",
+                s.templates().size(),
                 "includesRequests",
                 s.includesRequests(),
                 "mode",
@@ -400,6 +426,12 @@ public class BackupService {
                                     p.note() == null ? "" : p.note(),
                                     p.enabled() ? 1 : 0,
                                     p.sortOrder());
+                        for (var template : s.templates())
+                            db.update(
+                                    "INSERT INTO request_templates(id,platform_id,name,rules_json)"
+                                            + " VALUES(?,?,?,?)",
+                                    template.id(), template.platformId(), template.name(),
+                                    Json.write(ResultRules.validate(template.rules())));
                         for (var a : s.accounts())
                             db.update(
                                     "INSERT INTO accounts(id,platform_id,alias,enabled,sort_order)"
@@ -484,7 +516,10 @@ public class BackupService {
     }
 
     private static void checkId(String id) {
-        if (id == null || !id.matches("[a-f0-9]{32}")) throw new IllegalArgumentException();
+        if (id == null) throw new IllegalArgumentException();
+        if (id.matches("[a-f0-9]{32}")) return;
+        if (!id.matches("[1-9][0-9]{0,18}") || Long.parseLong(id) <= 0)
+            throw new IllegalArgumentException();
     }
 
     private static void checkName(String name, int max) {

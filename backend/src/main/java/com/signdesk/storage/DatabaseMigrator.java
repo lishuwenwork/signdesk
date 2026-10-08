@@ -18,9 +18,9 @@ public class DatabaseMigrator {
         Integer version =
                 jdbc.queryForObject(
                         "SELECT COALESCE(MAX(version),0) FROM schema_migrations", Integer.class);
-        if (version > 2)
+        if (version > 3)
             throw new IllegalStateException("Database schema is newer than this application");
-        for (int next = version + 1; next <= 2; next++) {
+        for (int next = version + 1; next <= 3; next++) {
             try (Connection connection = source.getConnection()) {
                 connection.setAutoCommit(false);
                 try {

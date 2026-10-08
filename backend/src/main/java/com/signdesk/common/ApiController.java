@@ -43,6 +43,11 @@ public class ApiController {
             boolean enabled,
             ResultRules rules) {}
 
+    public record NewTemplate(@NotBlank @Size(max = 60) String name, ResultRules rules) {}
+
+    public record TemplateInput(
+            @NotBlank @Size(max = 60) String name, ResultRules rules, @Min(1) int version) {}
+
     public record CurlPreviewInput(@NotBlank @Size(max = 262144) String curl) {}
 
     public record CurlInput(@NotBlank @Size(max = 262144) String curl, @Min(1) int version) {}
@@ -93,6 +98,30 @@ public class ApiController {
     @DeleteMapping("/platforms/{id}")
     public Object deletePlatform(@PathVariable String id) {
         catalog.delete("platforms", id);
+        return Map.of("deleted", true);
+    }
+
+    @GetMapping("/platforms/{platformId}/templates")
+    public Object templates(@PathVariable String platformId) {
+        return catalog.templates(platformId);
+    }
+
+    @PostMapping("/platforms/{platformId}/templates")
+    public Object template(@PathVariable String platformId, @Valid @RequestBody NewTemplate r) {
+        return Map.of("id", catalog.addTemplate(platformId, r.name(), r.rules()));
+    }
+
+    @PutMapping("/platforms/{platformId}/templates/{id}")
+    public Object template(
+            @PathVariable String platformId, @PathVariable String id,
+            @Valid @RequestBody TemplateInput r) {
+        catalog.updateTemplate(platformId, id, r.name(), r.rules(), r.version());
+        return Map.of("saved", true);
+    }
+
+    @DeleteMapping("/platforms/{platformId}/templates/{id}")
+    public Object deleteTemplate(@PathVariable String platformId, @PathVariable String id) {
+        catalog.deleteTemplate(platformId, id);
         return Map.of("deleted", true);
     }
 

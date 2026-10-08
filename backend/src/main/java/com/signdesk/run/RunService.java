@@ -1,8 +1,7 @@
 package com.signdesk.run;
 
-import cn.hutool.core.util.IdUtil;
-
 import com.signdesk.common.ApiException;
+import com.signdesk.common.Ids;
 import com.signdesk.common.Json;
 import com.signdesk.engine.HutoolRequestExecutor;
 import com.signdesk.engine.ResultRules;
@@ -192,7 +191,7 @@ public class RunService {
         if (db.count("SELECT COUNT(*) FROM run_items WHERE status IN('queued','running')")
                         + eligible.size()
                 > 10000) throw new ApiException(409, "队列已达上限，请等待完成");
-        String batch = IdUtil.fastSimpleUUID();
+        String batch = Ids.next();
         Instant now = clock.instant();
         String date =
                 (at == null ? now : at).atZone(ZoneId.of(s.timezone())).toLocalDate().toString();
@@ -224,7 +223,7 @@ public class RunService {
                     "INSERT INTO"
                         + " run_items(id,batch_id,request_id,request_revision,rules_json,ordinal)"
                         + " VALUES(?,?,?,?,?,?)",
-                    IdUtil.fastSimpleUUID(),
+                    Ids.next(),
                     batch,
                     r.get("id"),
                     r.get("currentRevision"),

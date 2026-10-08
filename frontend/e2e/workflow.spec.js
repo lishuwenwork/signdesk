@@ -6,6 +6,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   request,
 }, info) => {
   const errors = []
+  const receivedBefore = (await (await request.get('http://127.0.0.1:18081/received')).json()).length
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto('/#/platforms')
   await page.getByRole('button', { name: '＋ 新增平台' }).click()
@@ -32,7 +33,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await page.getByRole('link', { name: '执行记录', exact: true }).click()
   await expect(page.locator('.el-table__body-wrapper')).toContainText('成功')
   const received = await (await request.get('http://127.0.0.1:18081/received')).json()
-  expect(received[0]).toMatchObject({
+  expect(received[receivedBefore]).toMatchObject({
     url: '/check?a=%2f&x=1&x=2',
     method: 'POST',
     cookie: 'browser-test=one',
@@ -43,6 +44,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await expect(page.locator('.el-drawer')).toContainText('命中成功规则')
   await page.locator('.el-drawer__close-btn').click()
   await page.getByRole('link', { name: '平台与账号', exact: true }).click()
+  await page.locator('.platform-choice').filter({ hasText: '回显测试平台' }).click()
   await page.getByRole('button', { name: '更多 ▾' }).click()
   await page.getByText('更新 cURL', { exact: true }).click()
   await page
@@ -56,7 +58,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await page.locator('.el-message-box').getByRole('button', { name: '确认', exact: true }).click()
   await expect
     .poll(async () => (await (await request.get('http://127.0.0.1:18081/received')).json()).length)
-    .toBe(2)
+    .toBe(receivedBefore + 2)
   await page.getByRole('link', { name: '定时计划', exact: true }).click()
   await page.getByRole('button', { name: '编辑', exact: true }).click()
   await page.getByRole('dialog').locator('.el-switch').first().click()

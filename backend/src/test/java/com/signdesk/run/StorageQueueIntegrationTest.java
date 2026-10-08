@@ -210,6 +210,100 @@ class StorageQueueIntegrationTest {
     }
 
     @Test
+    void templatesArePlatformScopedValidatedVersionedAndCascadeWithTheirPlatform() {
+        platform = catalog.addPlatform("模板平台", "", true);
+        String other = catalog.addPlatform("另一个平台", "", true);
+        var rules = new ResultRules(null, new ResultRules.Match("done", true, null), null, null);
+        String id = catalog.addTemplate(platform, "  查询积分  ", rules);
+        assertTrue(id.matches("[1-9][0-9]{0,18}"));
+        assertTrue(Long.parseLong(id) > 0);
+        assertEquals(List.of(), catalog.templates(other));
+        var stored = catalog.templates(platform).getFirst();
+        assertEquals("查询积分", stored.get("name"));
+        assertEquals(rules, stored.get("rules"));
+        assertFalse(stored.containsKey("rulesJson"));
+        assertEquals(1, Db.integer(stored, "version"));
+        catalog.updateTemplate(platform, id, "查询结果", ResultRules.defaults(), 1);
+        assertEquals(2, Db.integer(catalog.templates(platform).getFirst(), "version"));
+        assertEquals(409, assertThrows(ApiException.class,
+                () -> catalog.updateTemplate(platform, id, "冲突", rules, 1)).status());
+        assertEquals(404, assertThrows(ApiException.class,
+                () -> catalog.updateTemplate(other, id, "错误平台", rules, 2)).status());
+        assertEquals(404, assertThrows(ApiException.class,
+                () -> catalog.deleteTemplate(other, id)).status());
+        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, " ", rules));
+        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, "名".repeat(61), rules));
+        var invalid = new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null);
+        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, "错误规则", invalid));
+        assertThrows(ApiException.class, () -> catalog.updateTemplate(platform, id, "错误规则", invalid, 2));
+        assertEquals("查询结果", catalog.templates(platform).getFirst().get("name"));
+        String second = catalog.addTemplate(platform, "签到", null);
+        catalog.deleteTemplate(platform, second);
+        assertEquals(1, catalog.templates(platform).size());
+        catalog.delete("platforms", platform);
+        assertEquals(0, db.count("SELECT COUNT(*) FROM request_templates"));
+    }
+
+    @Test
+    void templateChangesDoNotChangeRequestsOrQueuedRuleSnapshots() throws Exception {
+        setup("/hold");
+        String template = catalog.addTemplate(platform, "领取奖励", ResultRules.defaults());
+        var copied = (ResultRules) catalog.templates(platform).getFirst().get("rules");
+        String reward = catalog.addRequest(account, "领取奖励",
+                "curl '" + url + "/ok' --data-raw 'template-body'", copied, true);
+        String batch = runs.manual(new RunService.ManualRun(
+                "platform", platform, false, "template-snapshot-fixture")).getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            var changed = new ResultRules(new ResultRules.Match("code", 99, null), null, null, null);
+            catalog.updateTemplate(platform, template, "新规则", changed, 1);
+            catalog.deleteTemplate(platform, template);
+            assertEquals(copied, Json.read(Db.text(db.one(
+                    "SELECT rules_json FROM requests WHERE id=?", reward), "rulesJson"), ResultRules.class));
+            assertEquals(copied, Json.read(Db.text(db.one(
+                    "SELECT rules_json FROM run_items WHERE request_id=? AND batch_id=?", reward, batch),
+                    "rulesJson"), ResultRules.class));
+            catalog.updateRequest(reward, "领取奖励", true, changed, 1);
+        } finally {
+            release.countDown();
+        }
+        complete(batch);
+        var items = (List<Map<String, Object>>) runs.batch(batch).get("items");
+        assertEquals(List.of("success", "success"), items.stream().map(i -> Db.text(i, "status")).toList());
+        assertEquals(List.of("template-body"), bodies);
+        assertEquals(2, hits.get());
+    }
+
+    @Test
+    void snowflakeIdsAreStringsAcrossCatalogAndExecution() throws Exception {
+        setup("/ok");
+        String batch = manual(false);
+        complete(batch);
+        var batchRow = runs.batch(batch);
+        var item = ((List<Map<String, Object>>) batchRow.get("items")).getFirst();
+        String itemId = Db.text(item, "id");
+        var ids = List.of(platform, account, request, batch, itemId);
+        assertEquals(ids.size(), new HashSet<>(ids).size());
+        for (String id : ids) {
+            assertTrue(id.matches("[1-9][0-9]{0,18}"), "ID must be a decimal snowflake string");
+            assertTrue(Long.parseLong(id) > 9_007_199_254_740_991L);
+        }
+        assertEquals(platform, mapper.selectById(platform).id);
+        assertEquals(platform, db.one("SELECT platform_id FROM accounts WHERE id=?", account).get("platformId"));
+        assertEquals(account, db.one("SELECT account_id FROM requests WHERE id=?", request).get("accountId"));
+        assertEquals(platform, batchRow.get("platformId"));
+        assertEquals(batch, db.one("SELECT batch_id FROM run_items WHERE id=?", itemId).get("batchId"));
+        assertEquals(request, item.get("requestId"));
+        var json = Json.tree(Json.write(batchRow));
+        assertTrue(json.path("id").isString());
+        assertEquals(batch, json.path("id").asString());
+        assertTrue(json.path("items").get(0).path("id").isString());
+        assertEquals(itemId, json.path("items").get(0).path("id").asString());
+        assertEquals("success", status(batch));
+        assertEquals(1, hits.get());
+    }
+
+    @Test
     void queueUsesPersistedProxyWithoutRestartAndRejectsInvalidSettings() throws Exception {
         setup("/ok");
         catalog.replaceRequest(request, "curl 'http://127.0.0.1:1/ok' --data-raw 'proxy-body'", 1);
@@ -238,15 +332,18 @@ class StorageQueueIntegrationTest {
     @Test
     void legacyBackupWithoutProxyFieldsStillRestores() {
         setup("/ok");
+        catalog.addTemplate(platform, "旧备份中没有的模板", ResultRules.defaults());
         var exported = (Map<String, Object>) backups.export(new BackupService.Request(null, false, null, false));
         var backup = Json.map(Json.write(exported));
         var payload = (Map<String, Object>) backup.get("payload");
         ((Map<String, Object>) payload.get("settings")).remove("proxy");
+        payload.remove("templates");
         var previous = settings.get();
         settings.save(new SettingsService.Settings(true, 2, 20, 30, previous.version(),
                 new ProxySettings("http", "127.0.0.1", 12345)));
         backups.restore(new BackupService.Request(null, false, backup, true));
         assertEquals(ProxySettings.system(), settings.get().proxy());
+        assertTrue(catalog.templates(platform).isEmpty());
         assertTrue(settings.get().paused());
     }
 
@@ -418,6 +515,7 @@ class StorageQueueIntegrationTest {
     @Test
     void encryptedBackupIsPortableToDifferentMasterKeyAndRejectsWrongPassword() throws Exception {
         setup("/ok");
+        String template = catalog.addTemplate(platform, "签到模板", ResultRules.defaults());
         String batch = manual(false);
         complete(batch);
         String password = "local-test-backup-password";
@@ -428,6 +526,7 @@ class StorageQueueIntegrationTest {
                 (Map<String, Object>)
                         backups.export(new BackupService.Request(password, true, null, false));
         assertFalse(Json.write(encrypted).contains("test-only-credential"));
+        catalog.updateTemplate(platform, template, "导出后修改", ResultRules.defaults(), 1);
         assertThrows(
                 ApiException.class,
                 () -> backups.restore(new BackupService.Request("wrong", false, encrypted, true)));
@@ -449,13 +548,45 @@ class StorageQueueIntegrationTest {
         assertEquals(7, settings.get().timeoutSeconds());
         assertEquals(45, settings.get().retentionDays());
         assertEquals(proxy, settings.get().proxy());
+        assertEquals(template, catalog.templates(platform).getFirst().get("id"));
+        assertEquals("签到模板", catalog.templates(platform).getFirst().get("name"));
+        assertEquals(ResultRules.defaults(), catalog.templates(platform).getFirst().get("rules"));
         assertEquals(
                 1, db.count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
     }
 
     @Test
+    void invalidTemplateBackupsAreRejectedBeforeReplacingData() {
+        setup("/ok");
+        String template = catalog.addTemplate(platform, "有效模板", ResultRules.defaults());
+        var exported = (Map<String, Object>) backups.export(new BackupService.Request(null, false, null, false));
+        var invalidRules = new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null);
+        for (var change : List.of(
+                Map.of("platformId", "1"), Map.of("id", "9223372036854775808"),
+                Map.of("id", "0"), Map.of("name", " "), Map.of("rules", invalidRules))) {
+            var damaged = Json.map(Json.write(exported));
+            var payload = (Map<String, Object>) damaged.get("payload");
+            var templates = (List<Map<String, Object>>) payload.get("templates");
+            templates.getFirst().putAll(change);
+            assertThrows(ApiException.class,
+                    () -> backups.restore(new BackupService.Request(null, false, damaged, true)));
+            assertEquals(template, catalog.templates(platform).getFirst().get("id"));
+            assertEquals(1, db.count("SELECT COUNT(*) FROM requests"));
+            assertTrue(catalog.revision(request, 1).rawCurl().contains("test-only-credential"));
+        }
+        var duplicate = Json.map(Json.write(exported));
+        var payload = (Map<String, Object>) duplicate.get("payload");
+        var templates = (List<Map<String, Object>>) payload.get("templates");
+        templates.add(templates.getFirst());
+        assertThrows(ApiException.class,
+                () -> backups.restore(new BackupService.Request(null, false, duplicate, true)));
+        assertEquals(1, catalog.templates(platform).size());
+    }
+
+    @Test
     void plainExportContainsNoRequestAndRestoreDisablesPlaceholders() {
         setup("/ok");
+        String template = catalog.addTemplate(platform, "积分模板", ResultRules.defaults());
         var config =
                 (Map<String, Object>)
                         backups.export(new BackupService.Request(null, false, null, false));
@@ -463,7 +594,10 @@ class StorageQueueIntegrationTest {
         assertFalse(text.contains("test-only-credential"));
         assertFalse(text.contains("first-body"));
         assertFalse(text.contains(url));
+        catalog.deleteTemplate(platform, template);
         backups.restore(new BackupService.Request(null, false, config, true));
+        assertEquals(template, catalog.templates(platform).getFirst().get("id"));
+        assertEquals(ResultRules.defaults(), catalog.templates(platform).getFirst().get("rules"));
         assertEquals(0, db.count("SELECT COUNT(*) FROM request_revisions"));
         assertFalse(Db.flag(db.one("SELECT enabled FROM requests WHERE id=?", request), "enabled"));
     }

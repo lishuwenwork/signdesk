@@ -184,7 +184,8 @@ async function importBackup() {
           >
         </div>
         <div v-if="preview" class="inline-info">
-          {{ preview.platforms }} 个平台、{{ preview.accounts }} 个账号、{{ preview.requests }} 个请求。{{
+          {{ preview.platforms }} 个平台、{{ preview.accounts }} 个账号、{{ preview.requests }} 个请求，
+          {{ preview.templates || 0 }} 份接口模板。{{
             preview.includesRequests ? '包含完整请求' : '不含请求内容，恢复后需更新 cURL'
           }}。{{ preview.message }}
         </div>

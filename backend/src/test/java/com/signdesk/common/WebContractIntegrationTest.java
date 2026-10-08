@@ -2,6 +2,7 @@ package com.signdesk.common;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.signdesk.engine.ResultRules;
 import com.signdesk.platform.CatalogService;
 import com.signdesk.run.SettingsService;
 
@@ -66,6 +67,10 @@ class WebContractIntegrationTest {
     }
 
     HttpResponse<String> post(String path, Object body) throws Exception {
+        return call("POST", path, body);
+    }
+
+    HttpResponse<String> call(String method, String path, Object body) throws Exception {
         return client.send(
                 HttpRequest.newBuilder(
                                 URI.create(
@@ -74,9 +79,39 @@ class WebContractIntegrationTest {
                                                 + "/api"
                                                 + path))
                         .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(Json.write(body)))
+                        .method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                                : HttpRequest.BodyPublishers.ofString(Json.write(body)))
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void templateApiValidatesScopeAndVersionsWithoutExposingRequestContent() throws Exception {
+        String platform = catalog.addPlatform("接口模板测试", "", true);
+        String other = catalog.addPlatform("隔离平台", "", true);
+        String path = "/platforms/" + platform + "/templates";
+        var rules = new ResultRules(null, new ResultRules.Match("done", true, null), null, null);
+        var created = post(path, Map.of("name", "领取奖励", "rules", rules));
+        assertEquals(200, created.statusCode(), created.body());
+        var id = Json.tree(created.body()).path("id");
+        assertTrue(id.isString());
+        assertTrue(id.asString().matches("[1-9][0-9]{0,18}"));
+        var listed = call("GET", path, null);
+        assertEquals(200, listed.statusCode());
+        var item = Json.tree(listed.body()).get(0);
+        assertTrue(item.path("rules").path("success").isNull());
+        assertTrue(item.path("rules").path("alreadyDone").path("value").asBoolean());
+        assertTrue(item.path("curl").isMissingNode());
+        assertTrue(item.path("rawCurl").isMissingNode());
+        assertEquals(400, post(path, Map.of("name", " ")).statusCode());
+        assertEquals(400, post(path, Map.of("name", "错误规则", "rules",
+                new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null))).statusCode());
+        String target = path + "/" + id.asString();
+        assertEquals(200, call("PUT", target, Map.of("name", "更新奖励", "rules", rules, "version", 1)).statusCode());
+        assertEquals(409, call("PUT", target, Map.of("name", "冲突", "rules", rules, "version", 1)).statusCode());
+        assertEquals(404, call("DELETE", "/platforms/" + other + "/templates/" + id.asString(), Map.of()).statusCode());
+        assertEquals(200, call("DELETE", target, Map.of()).statusCode());
+        assertTrue(catalog.templates(platform).isEmpty());
     }
 
     @Test
