@@ -25,11 +25,12 @@
 | run.SettingsService | 暂停、并发、超时、保留天数与乐观锁 |
 | storage.InstanceLock / DatabaseMigrator | 单进程锁和事务性数据库版本迁移 |
 | storage.SecretStore | 主密钥装载、首次生成、AES-GCM、丢钥拒绝覆盖 |
+| storage.RunResponseStore | 执行响应快照加密、执行项关联验证、详情解密与文本／Base64 展示 |
 | backup.BackupService | 一致逻辑快照、KDF 加密、结构校验、事务恢复与主密钥迁移 |
 
 ## 数据模型
 
-数据库迁移脚本 `backend/src/main/resources/db/V*.sql` 是字段与约束的权威定义，当前顺序执行至 V3。
+数据库迁移脚本 `backend/src/main/resources/db/V*.sql` 是字段与约束的权威定义，当前顺序执行至 V4。
 
 | 表 | 用途 |
 |---|---|
@@ -39,6 +40,7 @@
 | platform_schedules | 一个平台一个计划，多个时间点、星期、时区、生效时间 |
 | run_batches | 触发来源、UTC 时刻、业务日期、计划快照、取消和批次状态 |
 | run_items | 冻结请求版本、结果规则、执行顺序、状态和安全摘要 |
+| run_responses | 绑定执行项 ID 的 AES-GCM 响应快照，随执行记录级联清理 |
 | daily_completions | 与日志独立的请求／业务日期完成标记 |
 | request_day_states | 与日志独立的本周期待确认标记 |
 | settings / schema_migrations | 全局配置与迁移版本 |
@@ -67,7 +69,9 @@ cURL 不进入 shell。Hutool 逐次构建独立 HttpRequest，禁用全局 Cook
 
 使用 SSLContext 默认信任与默认主机名验证；测试覆盖不可信证书、可信但主机名不符、正常受信任测试证书。`-L` 只在同来源内受控处理，最多 5 跳；每跳重新校验网络地址，并共享总执行期限。跨来源停止，避免转发任意位置的凭证。响应读取限 1 MiB。
 
-AES-GCM 认证数据绑定请求 ID 和 revision，保存原始 cURL 与结构化快照的全部内容。主密钥来自环境或独立文件，第一次自动生成后复用；有密文时缺少文件直接停止启动。普通列表不加载解密内容。详情按明确操作查看，API 禁止缓存，日志不保存响应正文。
+AES-GCM 认证数据绑定请求 ID 和 revision，保存原始 cURL 与结构化快照的全部内容；执行响应单独绑定 `run-response:` + 执行项 ID 加密。主密钥来自环境或独立文件，第一次自动生成后复用；存在请求或响应密文时缺少文件直接停止启动。普通列表不加载解密内容，应用日志不保存响应正文；只有执行详情接口显式解密响应，API 禁止缓存。
+
+每次执行保存已收到的最终响应字节、Content-Type、字符集及完整／部分／截断状态。网络完成后在数据库事务外加密，再与执行状态、周期标记同事务落库；数据库保存重试不会重发 HTTP。响应上限维持 1 MiB，超限只保存前缀并保持 unknown；超时也可保留实际收到的部分字节。空 HTTP 错误响应不保存 Hutool 合成的错误提示。正文随 run_items 外键级联清理，普通配置／加密配置备份不导出执行历史。
 
 ## API 与前端
 

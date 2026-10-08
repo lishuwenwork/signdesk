@@ -25,7 +25,14 @@ import javax.net.ssl.SSLContext;
 
 @Component
 public class HutoolRequestExecutor implements AutoCloseable {
-    public record Result(String status, Integer httpStatus, long durationMs, String summary) {}
+    public static final int MAX_RESPONSE_BYTES = 1048576;
+
+    public record Result(
+            String status, Integer httpStatus, long durationMs, String summary, ResponseBody response) {
+        public Result(String status, Integer httpStatus, long durationMs, String summary) {
+            this(status, httpStatus, durationMs, summary, null);
+        }
+    }
 
     private final NetworkPolicy policy;
     private final ScheduledExecutorService deadlines =
@@ -54,6 +61,8 @@ public class HutoolRequestExecutor implements AutoCloseable {
         AtomicReference<HttpURLConnection> connection = new AtomicReference<>();
         AtomicBoolean expired = new AtomicBoolean();
         Integer httpStatus = null;
+        ByteArrayOutputStream received = null;
+        String contentType = null, charset = StandardCharsets.UTF_8.name();
         String phase = "校验目标地址";
         ScheduledFuture<?> watchdog = null;
         try {
@@ -131,67 +140,69 @@ public class HutoolRequestExecutor implements AutoCloseable {
                     int status = response.getStatus();
                     httpStatus = status;
                     phase = "读取响应";
+                    String redirectStop = null;
                     if (java.util.Set.of(301, 302, 303, 307, 308).contains(status)
                             && current.followRedirects()) {
                         String location = response.header("Location");
-                        if (location == null || hop == 5)
-                            return result("unknown", status, start, "重定向缺少地址或超过 5 跳，结果待确认");
-                        var origin = CurlParser.validateUrl(current.rawUrl());
-                        var next = CurlParser.validateUrl(origin.resolve(location).toString());
-                        int oldPort =
-                                origin.getPort() < 0
-                                        ? (origin.getScheme().equals("https") ? 443 : 80)
-                                        : origin.getPort();
-                        int nextPort =
-                                next.getPort() < 0
-                                        ? (next.getScheme().equals("https") ? 443 : 80)
-                                        : next.getPort();
-                        if (!origin.getScheme().equals(next.getScheme())
-                                || !origin.getHost().equalsIgnoreCase(next.getHost())
-                                || oldPort != nextPort)
-                            return result("unknown", status, start, "跨来源重定向已停止，避免将完整请求中的凭证转发到其他来源");
-                        boolean get =
-                                status == 303 && !current.method().equals("HEAD")
-                                        || (status == 301 || status == 302)
-                                                && current.method().equals("POST");
-                        var redirectHeaders =
-                                get
+                        if (location == null || hop == 5) {
+                            redirectStop = "重定向缺少地址或超过 5 跳，结果待确认";
+                        } else {
+                            var origin = CurlParser.validateUrl(current.rawUrl());
+                            var next = CurlParser.validateUrl(origin.resolve(location).toString());
+                            int oldPort = origin.getPort() < 0
+                                    ? (origin.getScheme().equals("https") ? 443 : 80) : origin.getPort();
+                            int nextPort = next.getPort() < 0
+                                    ? (next.getScheme().equals("https") ? 443 : 80) : next.getPort();
+                            if (!origin.getScheme().equals(next.getScheme())
+                                    || !origin.getHost().equalsIgnoreCase(next.getHost())
+                                    || oldPort != nextPort) {
+                                redirectStop = "跨来源重定向已停止，避免将完整请求中的凭证转发到其他来源";
+                            } else {
+                                boolean get = status == 303 && !current.method().equals("HEAD")
+                                        || (status == 301 || status == 302) && current.method().equals("POST");
+                                var redirectHeaders = get
                                         ? current.headers().stream()
-                                                .filter(
-                                                        h ->
-                                                                !h.name()
-                                                                                .equalsIgnoreCase(
-                                                                                        "Content-Type")
-                                                                        && !h.name()
-                                                                                .equalsIgnoreCase(
-                                                                                        "Content-Length"))
+                                                .filter(h -> !h.name().equalsIgnoreCase("Content-Type")
+                                                        && !h.name().equalsIgnoreCase("Content-Length"))
                                                 .toList()
                                         : current.headers();
-                        current =
-                                new RequestSpec(
-                                        get ? "GET" : current.method(),
-                                        next.toString(),
-                                        redirectHeaders,
-                                        get ? new byte[0] : current.bodyBytes(),
-                                        true,
-                                        current.timeoutMillis());
-                        continue;
+                                current = new RequestSpec(get ? "GET" : current.method(), next.toString(),
+                                        redirectHeaders, get ? new byte[0] : current.bodyBytes(),
+                                        true, current.timeoutMillis());
+                                continue;
+                            }
+                        }
                     }
-                    ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-                    var input = response.bodyStream();
+                    received = new ByteArrayOutputStream();
+                    contentType = response.header("Content-Type");
+                    charset = response.charset() == null ? StandardCharsets.UTF_8.name() : response.charset();
+                    // Hutool synthesizes an error message when the real HTTP error stream is absent.
+                    var activeConnection = connection.get();
+                    var input = status >= 400 && activeConnection != null && activeConnection.getErrorStream() == null
+                            ? null : response.bodyStream();
                     if (input != null) {
                         byte[] buffer = new byte[8192];
                         int read;
                         while ((read = input.read(buffer)) != -1) {
-                            if (bytes.size() + read > 1048576)
-                                return result("unknown", status, start, "响应超过 1 MiB，结果待确认");
-                            bytes.write(buffer, 0, read);
+                            int remainingBytes = MAX_RESPONSE_BYTES - received.size();
+                            if (read > remainingBytes) {
+                                received.write(buffer, 0, remainingBytes);
+                                return result("unknown", status, start, "响应超过 1 MiB，结果待确认",
+                                        capture(received, contentType, charset, false, true));
+                            }
+                            received.write(buffer, 0, read);
                             if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) > timeout)
-                                return result("unknown", status, start, timeoutSummary(phase, timeout));
+                                return result("unknown", status, start, timeoutSummary(phase, timeout),
+                                        capture(received, contentType, charset, false, false));
                         }
                     }
+                    if (expired.get())
+                        return result("unknown", status, start, timeoutSummary(phase, timeout),
+                                capture(received, contentType, charset, false, false));
+                    var captured = capture(received, contentType, charset, true, false);
+                    if (redirectStop != null) return result("unknown", status, start, redirectStop, captured);
                     String classification =
-                            rules.classify(status, bytes.toString(StandardCharsets.UTF_8));
+                            rules.classify(status, received.toString(StandardCharsets.UTF_8));
                     String summary =
                             switch (classification) {
                                 case "success" -> "命中成功规则";
@@ -200,17 +211,19 @@ public class HutoolRequestExecutor implements AutoCloseable {
                                 case "failed" -> "HTTP 或业务规则判定失败";
                                 default -> "响应未命中可确认规则，请核对平台实际状态";
                             };
-                    return result(classification, status, start, summary);
+                    return result(classification, status, start, summary, captured);
                 } finally {
                     if (watchdog != null) watchdog.cancel(false);
                 }
             }
             return result("unknown", null, start, "重定向未完成，结果待确认");
         } catch (com.signdesk.common.ApiException e) {
-            return result("failed", null, start, e.getMessage());
+            return result("failed", null, start, e.getMessage(),
+                    capture(received, contentType, charset, false, false));
         } catch (Exception e) {
             return result("unknown", httpStatus, start,
-                    expired.get() ? timeoutSummary(phase, timeout) : networkSummary(e, phase, timeout));
+                    expired.get() ? timeoutSummary(phase, timeout) : networkSummary(e, phase, timeout),
+                    capture(received, contentType, charset, false, false));
         } finally {
             if (watchdog != null) watchdog.cancel(false);
             var c = connection.get();
@@ -245,9 +258,18 @@ public class HutoolRequestExecutor implements AutoCloseable {
         return phase + "：" + reason + "；请检查网络和代理；结果待确认，请核对平台后再执行";
     }
 
+    private static ResponseBody capture(
+            ByteArrayOutputStream bytes, String contentType, String charset,
+            boolean complete, boolean truncated) {
+        return bytes == null ? null : new ResponseBody(bytes.toByteArray(), contentType, charset, complete, truncated);
+    }
+
     private Result result(String status, Integer http, long start, String text) {
-        return new Result(
-                status, http, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), text);
+        return result(status, http, start, text, null);
+    }
+
+    private Result result(String status, Integer http, long start, String text, ResponseBody response) {
+        return new Result(status, http, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start), text, response);
     }
 
     @Override

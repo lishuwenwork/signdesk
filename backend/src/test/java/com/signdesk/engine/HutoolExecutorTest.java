@@ -106,6 +106,115 @@ class HutoolExecutorTest {
     }
 
     @Test
+    void capturesSuccessfulErrorAndEmptyBodiesWithoutChangingClassification() {
+        byte[] json = "{\"code\":0,\"message\":\"响应体 fixture-only-secret\"}".getBytes(StandardCharsets.UTF_8);
+        server.createContext("/response", e -> {
+            e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+            e.sendResponseHeaders(200, json.length);
+            e.getResponseBody().write(json);
+            e.close();
+        });
+        server.createContext("/error-body", e -> {
+            e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+            e.sendResponseHeaders(401, json.length);
+            e.getResponseBody().write(json);
+            e.close();
+        });
+        server.createContext("/empty", e -> { e.sendResponseHeaders(204, -1); e.close(); });
+        server.createContext("/empty-error", e -> { e.sendResponseHeaders(401, -1); e.close(); });
+        var parser = new CurlParser();
+        var success = executor.execute(parser.parse("curl '" + url + "/response'").spec(), ResultRules.defaults(), 3);
+        assertEquals("success", success.status());
+        assertArrayEquals(json, success.response().bodyBytes());
+        assertEquals("UTF-8", success.response().charset());
+        assertTrue(success.response().complete());
+        assertFalse(success.response().truncated());
+        assertFalse(success.toString().contains("fixture-only-secret"));
+        byte[] copy = success.response().bodyBytes();
+        copy[0] = 0;
+        assertArrayEquals(json, success.response().bodyBytes());
+        var error = executor.execute(parser.parse("curl '" + url + "/error-body'").spec(), ResultRules.defaults(), 3);
+        assertEquals("expired", error.status());
+        assertEquals(401, error.httpStatus());
+        assertArrayEquals(json, error.response().bodyBytes());
+        assertTrue(error.response().complete());
+        var empty = executor.execute(parser.parse("curl '" + url + "/empty'").spec(), ResultRules.defaults(), 3);
+        assertEquals(204, empty.httpStatus());
+        assertEquals(0, empty.response().bodyBytes().length);
+        assertTrue(empty.response().complete());
+        var emptyError = executor.execute(parser.parse("curl '" + url + "/empty-error'").spec(), ResultRules.defaults(), 3);
+        assertEquals("expired", emptyError.status());
+        assertEquals(0, emptyError.response().bodyBytes().length, "do not record Hutool's synthetic error message");
+        assertTrue(emptyError.response().complete());
+    }
+
+    @Test
+    void recordsPartialBodyOnReadTimeoutWithoutRetryingOrReportingSuccess() {
+        byte[] prefix = "{\"code\":0,\"message\":\"partial-response-secret".getBytes(StandardCharsets.UTF_8);
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/partial", e -> {
+            attempts.incrementAndGet();
+            try {
+                e.sendResponseHeaders(200, 0);
+                e.getResponseBody().write(prefix);
+                e.getResponseBody().flush();
+                Thread.sleep(1500);
+                e.getResponseBody().write("\"}".getBytes(StandardCharsets.UTF_8));
+            } catch (Exception ignored) {
+            } finally { e.close(); }
+        });
+        var result = executor.execute(new CurlParser().parse(
+                "curl '" + url + "/partial' --max-time 1").spec(), ResultRules.defaults(), 3);
+        assertEquals("unknown", result.status());
+        assertEquals(200, result.httpStatus());
+        assertTrue(result.summary().contains("TIMEOUT"));
+        assertArrayEquals(prefix, result.response().bodyBytes());
+        assertFalse(result.response().complete());
+        assertFalse(result.response().truncated());
+        assertEquals(1, attempts.get());
+        assertFalse(result.summary().contains("partial-response-secret"));
+    }
+
+    @Test
+    void exactLimitIsCompleteAndOversizedBodyKeepsOnlyTheBoundedPrefix() {
+        byte[] exact = new byte[HutoolRequestExecutor.MAX_RESPONSE_BYTES];
+        java.util.Arrays.fill(exact, (byte) 'x');
+        server.createContext("/exact", e -> {
+            e.sendResponseHeaders(200, exact.length);
+            e.getResponseBody().write(exact);
+            e.close();
+        });
+        var parser = new CurlParser();
+        var full = executor.execute(parser.parse("curl '" + url + "/exact'").spec(), ResultRules.defaults(), 3);
+        assertArrayEquals(exact, full.response().bodyBytes());
+        assertTrue(full.response().complete());
+        assertFalse(full.response().truncated());
+        var large = executor.execute(parser.parse("curl '" + url + "/large'").spec(), ResultRules.defaults(), 3);
+        assertEquals("unknown", large.status());
+        assertEquals(HutoolRequestExecutor.MAX_RESPONSE_BYTES, large.response().bodyBytes().length);
+        assertTrue(large.response().truncated());
+        assertFalse(large.response().complete());
+    }
+
+    @Test
+    void stoppedRedirectStillCapturesItsBodyAndNeverForwardsCredentials() {
+        byte[] message = "redirect-response-only".getBytes(StandardCharsets.UTF_8);
+        server.createContext("/blocked-response", e -> {
+            e.getResponseHeaders().add("Location", "http://other.example/collect");
+            e.sendResponseHeaders(302, message.length);
+            e.getResponseBody().write(message);
+            e.close();
+        });
+        var result = executor.execute(new CurlParser().parse("curl -L '" + url
+                + "/blocked-response' -b 'fixture=one'").spec(), ResultRules.defaults(), 3);
+        assertEquals("unknown", result.status());
+        assertEquals(302, result.httpStatus());
+        assertArrayEquals(message, result.response().bodyBytes());
+        assertTrue(result.response().complete());
+        assertNull(query.get());
+    }
+
+    @Test
     void preservesRawBytesAndDoesNotShareCookies() {
         var parser = new CurlParser();
         String raw = "/echo?a=%2f%2F&x=1&x=2&sig=a+b%20c";

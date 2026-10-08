@@ -9,6 +9,7 @@ import com.signdesk.platform.CatalogService;
 import com.signdesk.schedule.ScheduleService;
 import com.signdesk.schedule.ScheduleSpec;
 import com.signdesk.storage.Db;
+import com.signdesk.storage.RunResponseStore;
 
 import jakarta.annotation.PreDestroy;
 
@@ -30,6 +31,7 @@ public class RunService {
     private final ScheduleService schedules;
     private final CatalogService catalog;
     private final HutoolRequestExecutor http;
+    private final RunResponseStore responses;
     private final Clock clock;
     private final TransactionTemplate transactions;
     private final Set<String> activePlatforms = ConcurrentHashMap.newKeySet();
@@ -51,6 +53,7 @@ public class RunService {
             ScheduleService schedules,
             CatalogService catalog,
             HutoolRequestExecutor http,
+            RunResponseStore responses,
             Clock clock,
             PlatformTransactionManager manager) {
         this.db = db;
@@ -58,6 +61,7 @@ public class RunService {
         this.schedules = schedules;
         this.catalog = catalog;
         this.http = http;
+        this.responses = responses;
         this.clock = clock;
         transactions = new TransactionTemplate(manager);
     }
@@ -418,6 +422,7 @@ public class RunService {
             int revision,
             String date,
             HutoolRequestExecutor.Result result) {
+        String encryptedResponse = responses.encrypt(itemId, result.response());
         RuntimeException last = null;
         for (int attempt = 0; attempt < 3; attempt++) {
             try {
@@ -433,6 +438,7 @@ public class RunService {
                                     result.summary(),
                                     clock.instant().toString(),
                                     itemId);
+                            responses.save(itemId, encryptedResponse);
                             if (List.of("success", "already_done").contains(result.status()))
                                 db.update(
                                         "INSERT INTO daily_completions VALUES(?,?,?) ON"
@@ -479,6 +485,16 @@ public class RunService {
                                     + " status='queued'",
                             id);
                 });
+    }
+
+    public Map<String, Object> detail(String id) {
+        var detail = db.one(
+                "SELECT"
+                    + " i.id,i.batch_id,i.request_id,i.request_revision,i.status,i.http_status,i.duration_ms,i.safe_summary,i.started_at,i.finished_at,b.business_date,b.source,b.created_at"
+                    + " FROM run_items i JOIN run_batches b ON b.id=i.batch_id WHERE i.id=?",
+                id);
+        detail.put("response", responses.detail(id));
+        return detail;
     }
 
     public Map<String, Object> batch(String id) {

@@ -35,7 +35,9 @@ public class SecretStore {
                             java.sql.DriverManager.getConnection(
                                     "jdbc:sqlite:" + lock.directory().resolve("signdesk.db"));
                     var statement = connection.createStatement();
-                    var rows = statement.executeQuery("SELECT COUNT(*) FROM request_revisions")) {
+                    var rows = statement.executeQuery(
+                            "SELECT EXISTS(SELECT 1 FROM request_revisions)"
+                                    + " OR EXISTS(SELECT 1 FROM run_responses)")) {
                 rows.next();
                 if (rows.getInt(1) > 0)
                     throw new IllegalStateException(

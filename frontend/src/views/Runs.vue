@@ -1,11 +1,33 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { api, report, periodic, execute, labels, tones, dateTime } from '../api'
 const platforms = ref([]),
   data = ref({ items: [], total: 0 }),
   error = ref(''),
   drawer = ref(false),
-  detail = ref(null)
+  detail = ref(null),
+  detailLoading = ref(false)
+let detailSession = 0
+watch(drawer, (open) => {
+  if (!open) {
+    detailSession++
+    detail.value = null
+    detailLoading.value = false
+  }
+})
+onUnmounted(() => {
+  detailSession++
+  detail.value = null
+})
+const responseMessage = computed(() => {
+  if (['queued', 'running'].includes(detail.value?.status)) return '请求尚未完成，等待获取响应体。'
+  if (['skipped', 'cancelled'].includes(detail.value?.status)) return '本次没有发送请求，无响应体。'
+  return {
+    not_recorded: '这条记录没有保存响应体，可能是在响应记录功能启用前生成。',
+    unavailable: '本次请求未获取到响应体，例如在连接或发送阶段失败、超时。',
+    decryption_failed: '响应体无法解密，请检查原主密钥。',
+  }[detail.value?.response?.state] || '没有可查看的响应体。'
+})
 const filter = reactive({ platformId: '', status: '', source: '', page: 1 })
 async function load() {
   try {
@@ -13,7 +35,11 @@ async function load() {
     data.value = await api(`/runs?${query}`)
     platforms.value = await api('/platforms')
     error.value = ''
-    if (drawer.value && detail.value) detail.value = await api(`/runs/${detail.value.id}`)
+    if (drawer.value && detail.value && ['queued', 'running'].includes(detail.value.status)) {
+      const id = detail.value.id, current = detailSession
+      const refreshed = await api(`/runs/${id}`)
+      if (drawer.value && current === detailSession && detail.value?.id === id) detail.value = refreshed
+    }
   } catch (e) {
     error.value = e.message
   }
@@ -24,11 +50,20 @@ function changeFilter() {
   load()
 }
 async function show(row) {
+  const current = ++detailSession
+  detail.value = null
+  detailLoading.value = true
+  drawer.value = true
   try {
-    detail.value = await api(`/runs/${row.id}`)
-    drawer.value = true
+    const result = await api(`/runs/${row.id}`)
+    if (drawer.value && current === detailSession) detail.value = result
   } catch (e) {
-    report(e)
+    if (drawer.value && current === detailSession) {
+      report(e)
+      drawer.value = false
+    }
+  } finally {
+    if (current === detailSession) detailLoading.value = false
   }
 }
 </script>
@@ -96,10 +131,11 @@ async function show(row) {
     </div>
   </section>
   <div class="inline-info">
-    记录只保存状态、HTTP、耗时和固定摘要，不保存完整请求或响应。每日完成与待确认标记不会随日志清理而丢失。
+    响应体加密保存，仅在详情中查看，随执行记录按保留天数清理。每日完成与待确认标记不会随记录清理而丢失。
   </div>
-  <el-drawer v-model="drawer" title="执行记录详情" size="460px"
-    ><template v-if="detail"
+  <el-drawer v-model="drawer" title="执行记录详情" size="min(760px, 100vw)" destroy-on-close
+    ><div v-if="detailLoading" v-loading="true" style="min-height: 120px" aria-label="加载执行详情" />
+    <template v-if="detail"
       ><el-tag :type="tones[detail.status]">{{ labels[detail.status] }}</el-tag>
       <dl class="preview-grid">
         <dt>来源</dt>
@@ -119,6 +155,24 @@ async function show(row) {
         <dt>摘要</dt>
         <dd>{{ detail.safeSummary || '等待执行' }}</dd>
       </dl>
+      <h3>响应体</h3>
+      <p class="muted small">响应可能包含个人信息或凭证；仅在此处解密展示，关闭详情后清除页面内容。</p>
+      <template v-if="detail.response?.body != null">
+        <div class="muted small">
+          {{ detail.response.contentType || '未提供 Content-Type' }} · {{ detail.response.byteLength }} 字节
+          <template v-if="detail.response.encoding === 'text'"> · {{ detail.response.charset }}</template>
+        </div>
+        <el-alert v-if="detail.response.state === 'truncated'" class="space-top" type="warning" :closable="false"
+          title="响应超过 1 MiB，仅保存前 1 MiB；以下内容已截断，执行结果仍为待确认。" />
+        <el-alert v-else-if="detail.response.state === 'partial'" class="space-top" type="warning" :closable="false"
+          title="响应读取中断，以下仅是实际已收到的内容，并非完整响应。" />
+        <el-alert v-if="detail.response.encoding === 'base64'" class="space-top" type="info" :closable="false"
+          title="二进制内容或无法按字符集解码，以下以 Base64 原样展示。" />
+        <el-empty v-if="detail.response.byteLength === 0" description="响应体为空（0 字节）" :image-size="50" />
+        <pre v-else class="preview-code response-body" data-testid="response-body">{{ detail.response.body }}</pre>
+      </template>
+      <el-alert v-else :title="responseMessage" class="space-top" :closable="false"
+        :type="detail.response?.state === 'decryption_failed' ? 'error' : 'info'" />
       <el-alert
         v-if="detail.status === 'unknown'"
         title="可能已在目标平台完成操作，请先核对结果，再决定是否重新执行"
@@ -134,3 +188,10 @@ async function show(row) {
     ></el-drawer
   >
 </template>
+<style scoped>
+.response-body {
+  max-height: 50vh;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+</style>

@@ -238,11 +238,7 @@ public class ApiController {
 
     @GetMapping("/runs/{id}")
     public Object run(@PathVariable String id) {
-        return db.one(
-                "SELECT"
-                    + " i.id,i.batch_id,i.request_id,i.request_revision,i.status,i.http_status,i.duration_ms,i.safe_summary,i.started_at,i.finished_at,b.business_date,b.source,b.created_at"
-                    + " FROM run_items i JOIN run_batches b ON b.id=i.batch_id WHERE i.id=?",
-                id);
+        return runs.detail(id);
     }
 
     @GetMapping("/settings")

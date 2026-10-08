@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.signdesk.engine.ResultRules;
 import com.signdesk.platform.CatalogService;
 import com.signdesk.run.SettingsService;
+import com.signdesk.run.RunService;
+import com.sun.net.httpserver.HttpServer;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +39,7 @@ class WebContractIntegrationTest {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("signdesk.data-dir", () -> DIR.resolve("data").toString());
         registry.add("signdesk.key-file", () -> DIR.resolve("master.key").toString());
+        registry.add("signdesk.allowed-hosts", () -> "127.0.0.1");
     }
 
     @Autowired Environment environment;
@@ -83,6 +86,56 @@ class WebContractIntegrationTest {
                                 : HttpRequest.BodyPublishers.ofString(Json.write(body)))
                         .build(),
                 HttpResponse.BodyHandlers.ofString());
+    }
+
+    @Test
+    void executionDetailsReturnTheResponseBodyButListsAndBatchesDoNot() throws Exception {
+        var fixture = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        String text = "{\n\"code\":0,\"message\":\"响应体 api-response-only-secret\"\n}";
+        fixture.createContext("/reply", e -> {
+            byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+            e.sendResponseHeaders(200, bytes.length);
+            e.getResponseBody().write(bytes);
+            e.close();
+        });
+        fixture.start();
+        try {
+            String platform = catalog.addPlatform("响应详情接口测试", "", true);
+            String account = catalog.addAccount(platform, "本地账号", true);
+            String request = catalog.addRequest(account, "响应记录", "curl 'http://127.0.0.1:"
+                    + fixture.getAddress().getPort() + "/reply'", ResultRules.defaults(), true);
+            var accepted = post("/runs", new RunService.ManualRun("request", request, false, "response-api-fixture"));
+            assertEquals(202, accepted.statusCode());
+            String batch = Json.tree(accepted.body()).path("batchIds").get(0).asString();
+            String item = null;
+            long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+            while (System.nanoTime() < until) {
+                var current = call("GET", "/batches/" + batch, null);
+                assertFalse(current.body().contains("api-response-only-secret"));
+                var json = Json.tree(current.body());
+                if (json.path("status").asString().equals("completed")) {
+                    item = json.path("items").get(0).path("id").asString();
+                    break;
+                }
+                Thread.sleep(30);
+            }
+            assertNotNull(item, "execution did not finish");
+            var detail = call("GET", "/runs/" + item, null);
+            assertEquals(200, detail.statusCode());
+            assertEquals("no-store", detail.headers().firstValue("Cache-Control").orElseThrow());
+            var response = Json.tree(detail.body()).path("response");
+            assertEquals("complete", response.path("state").asString());
+            assertEquals("text", response.path("encoding").asString());
+            assertEquals(text, response.path("body").asString());
+            assertEquals(text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length, response.path("byteLength").asInt());
+            var logs = call("GET", "/runs", null);
+            assertFalse(logs.body().contains("api-response-only-secret"));
+            for (var entry : Json.tree(logs.body()).path("items"))
+                assertTrue(entry.path("response").isMissingNode());
+        } finally {
+            fixture.stop(0);
+        }
     }
 
     @Test

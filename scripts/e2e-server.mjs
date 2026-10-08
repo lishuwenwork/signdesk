@@ -15,6 +15,35 @@ const fixture = createServer(async (request, response) => {
   let body = ''
   for await (const chunk of request) body += chunk.toString()
   received.push({ url: request.url, method: request.method, cookie: request.headers.cookie, device: request.headers['x-device'], body })
+  const route = new URL(request.url, 'http://127.0.0.1').pathname
+  if (route === '/responses/json') {
+    response.setHeader('Content-Type', 'application/json; charset=UTF-8')
+    response.end(JSON.stringify({ code: 0, message: '响应体 response-fixture-secret', html: '<img src=x onerror="window.__responseExecuted=true">' }, null, 2))
+    return
+  }
+  if (route === '/responses/error') {
+    response.writeHead(500, { 'Content-Type': 'text/html; charset=UTF-8' })
+    response.end('<div>fixture-error-response</div><img src=x onerror="window.__responseExecuted=true">')
+    return
+  }
+  if (route === '/responses/empty') { response.writeHead(204); response.end(); return }
+  if (route === '/responses/binary') {
+    response.setHeader('Content-Type', 'application/octet-stream')
+    response.end(Buffer.from([0, 1, 2, 255]))
+    return
+  }
+  if (route === '/responses/large') {
+    response.setHeader('Content-Type', 'text/plain; charset=UTF-8')
+    response.end(Buffer.alloc(1048577, 'L'))
+    return
+  }
+  if (route === '/responses/partial') {
+    response.writeHead(200, { 'Content-Type': 'text/plain; charset=UTF-8' })
+    response.write('partial-response-fixture-secret')
+    const timer = setTimeout(() => response.end('-not-received'), 1500)
+    response.on('close', () => clearTimeout(timer))
+    return
+  }
   response.setHeader('Content-Type', 'application/json'); response.end('{"code":0}')
 })
 fixture.listen(18081, '127.0.0.1')

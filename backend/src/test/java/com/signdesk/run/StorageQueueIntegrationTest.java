@@ -11,6 +11,7 @@ import com.signdesk.engine.ProxySettings;
 import com.signdesk.platform.CatalogService;
 import com.signdesk.platform.PlatformMapper;
 import com.signdesk.schedule.ScheduleService;
+import com.signdesk.schedule.ScheduleScanner;
 import com.signdesk.schedule.ScheduleSpec;
 import com.signdesk.storage.*;
 import com.sun.net.httpserver.HttpServer;
@@ -23,6 +24,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 
 import java.net.InetSocketAddress;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -58,6 +61,8 @@ class StorageQueueIntegrationTest {
     @Autowired ScheduleService schedules;
     @Autowired BackupService backups;
     @Autowired SecretStore secrets;
+    @Autowired RunResponseStore responses;
+    @Autowired ScheduleScanner scanner;
     @Autowired InstanceLock lock;
     @Autowired DatabaseMigrator migrator;
     @Autowired PlatformMapper mapper;
@@ -135,6 +140,57 @@ class StorageQueueIntegrationTest {
                     }
                     e.close();
                 });
+        server.createContext("/response", e -> {
+            byte[] reply = responseText(hits.incrementAndGet()).getBytes(StandardCharsets.UTF_8);
+            e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+            e.sendResponseHeaders(200, reply.length);
+            e.getResponseBody().write(reply);
+            e.close();
+        });
+        server.createContext("/response-error", e -> {
+            hits.incrementAndGet();
+            byte[] reply = "upstream-response-only-secret".getBytes(StandardCharsets.UTF_8);
+            e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+            e.sendResponseHeaders(500, reply.length);
+            e.getResponseBody().write(reply);
+            e.close();
+        });
+        server.createContext("/response-gbk", e -> {
+            hits.incrementAndGet();
+            byte[] reply = "响应体中文".getBytes(Charset.forName("GBK"));
+            e.getResponseHeaders().add("Content-Type", "text/plain; charset=GBK");
+            e.sendResponseHeaders(200, reply.length);
+            e.getResponseBody().write(reply);
+            e.close();
+        });
+        server.createContext("/response-binary", e -> {
+            hits.incrementAndGet();
+            byte[] reply = {0, 1, 2, (byte) 255};
+            e.getResponseHeaders().add("Content-Type", "application/octet-stream");
+            e.sendResponseHeaders(200, reply.length);
+            e.getResponseBody().write(reply);
+            e.close();
+        });
+        server.createContext("/response-partial", e -> {
+            hits.incrementAndGet();
+            try {
+                e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                e.sendResponseHeaders(200, 0);
+                e.getResponseBody().write("partial-response-only-secret".getBytes(StandardCharsets.UTF_8));
+                e.getResponseBody().flush();
+                Thread.sleep(1500);
+            } catch (Exception ignored) {
+            } finally { e.close(); }
+        });
+        server.createContext("/response-large", e -> {
+            hits.incrementAndGet();
+            byte[] reply = new byte[1048577];
+            Arrays.fill(reply, (byte) 'z');
+            e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+            e.sendResponseHeaders(200, reply.length);
+            try { e.getResponseBody().write(reply); } catch (Exception ignored) {}
+            e.close();
+        });
         server.start();
         url = "http://127.0.0.1:" + server.getAddress().getPort();
     }
@@ -203,10 +259,155 @@ class StorageQueueIntegrationTest {
                 ((List<Map<String, Object>>) runs.batch(batch).get("items")).getFirst(), "status");
     }
 
+    static String responseText(int attempt) {
+        return "{\n  \"code\":0,\n  \"attempt\":" + attempt
+                + ",\n  \"message\":\"响应体 response-only-fixture-secret\"\n}";
+    }
+
+    String itemId(String batch) {
+        return Db.text(((List<Map<String, Object>>) runs.batch(batch).get("items")).getFirst(), "id");
+    }
+
     static void await(java.util.function.BooleanSupplier condition) throws Exception {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
         while (!condition.getAsBoolean() && System.nanoTime() < until) Thread.sleep(30);
         assertTrue(condition.getAsBoolean(), "operation did not finish");
+    }
+
+    @Test
+    void responseBodiesAreEncryptedAndRemainIndependentForEveryExecution() throws Exception {
+        setup("/response");
+        String first = manual(false);
+        complete(first);
+        var firstBody = responses.detail(itemId(first));
+        assertEquals("complete", firstBody.state());
+        assertEquals(responseText(1), firstBody.body());
+        assertEquals("text", firstBody.encoding());
+        assertEquals(responseText(1).getBytes(StandardCharsets.UTF_8).length, firstBody.byteLength());
+        String second = manual(true);
+        complete(second);
+        assertEquals(responseText(2), responses.detail(itemId(second)).body());
+        assertEquals(firstBody, new RunResponseStore(db, secrets).detail(itemId(first)));
+        String ciphertext = Db.text(db.one("SELECT ciphertext FROM run_responses WHERE run_id=?", itemId(first)), "ciphertext");
+        assertFalse(ciphertext.contains("response-only-fixture-secret"));
+        assertThrows(IllegalStateException.class, () -> secrets.decrypt(ciphertext, "run-response:wrong-id"));
+        assertFalse(Json.write(runs.logs(null, null, null, 1, 20)).contains("response-only-fixture-secret"));
+        assertFalse(Json.write(runs.batch(first)).contains("response-only-fixture-secret"));
+        assertFalse(Json.write(backups.export(new BackupService.Request(null, false, null, false)))
+                .contains("response-only-fixture-secret"));
+        assertEquals(firstBody, runs.detail(itemId(first)).get("response"));
+        assertEquals(2, db.count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(2, hits.get());
+    }
+
+    @Test
+    void failedEmptySkippedAndUnavailableResponsesHaveDistinctDetails() throws Exception {
+        setup("/response-error");
+        String failed = manual(false);
+        complete(failed);
+        assertEquals("unknown", status(failed));
+        assertEquals("complete", responses.detail(itemId(failed)).state());
+        assertEquals("upstream-response-only-secret", responses.detail(itemId(failed)).body());
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
+        assertEquals("not_recorded", responses.detail(itemId(skipped)).state());
+        assertEquals(1, hits.get(), "an uncertain result must not be retried automatically");
+        catalog.replaceRequest(request, "curl '" + url + "/expired'", 1);
+        String empty = manual(true);
+        complete(empty);
+        assertEquals("expired", status(empty));
+        assertEquals("complete", responses.detail(itemId(empty)).state());
+        assertEquals("", responses.detail(itemId(empty)).body());
+        assertEquals(0, responses.detail(itemId(empty)).byteLength());
+        int port;
+        try (var socket = new java.net.ServerSocket(0)) { port = socket.getLocalPort(); }
+        int version = Db.integer(db.one("SELECT version FROM requests WHERE id=?", request), "version");
+        catalog.replaceRequest(request, "curl 'http://127.0.0.1:" + port + "/unavailable' --max-time 1", version);
+        String unavailable = manual(true);
+        complete(unavailable);
+        assertEquals("unknown", status(unavailable));
+        assertEquals("unavailable", responses.detail(itemId(unavailable)).state());
+        assertNull(responses.detail(itemId(unavailable)).body());
+        assertEquals(2, hits.get());
+    }
+
+    @Test
+    void partialAndOversizedBodiesArePersistedWithExplicitIncompleteStates() throws Exception {
+        setup("/response-partial");
+        catalog.replaceRequest(request, "curl '" + url + "/response-partial' --max-time 1", 1);
+        String partial = manual(false);
+        complete(partial);
+        assertEquals("unknown", status(partial));
+        assertEquals("partial", responses.detail(itemId(partial)).state());
+        assertEquals("partial-response-only-secret", responses.detail(itemId(partial)).body());
+        catalog.replaceRequest(request, "curl '" + url + "/response-large'", 2);
+        String large = manual(true);
+        complete(large);
+        var detail = responses.detail(itemId(large));
+        assertEquals("unknown", status(large));
+        assertEquals("truncated", detail.state());
+        assertEquals(1048576, detail.byteLength());
+        assertEquals("z".repeat(1048576), detail.body());
+        assertEquals(1048576, detail.limitBytes());
+        assertEquals(2, hits.get());
+    }
+
+    @Test
+    void responseDetailsDecodeDeclaredCharsetsAndPreserveBinaryBytes() throws Exception {
+        setup("/response-gbk");
+        String text = manual(false);
+        complete(text);
+        assertEquals("响应体中文", responses.detail(itemId(text)).body());
+        assertEquals("text", responses.detail(itemId(text)).encoding());
+        assertEquals("GBK", responses.detail(itemId(text)).charset().toUpperCase(Locale.ROOT));
+        catalog.replaceRequest(request, "curl '" + url + "/response-binary'", 1);
+        String binary = manual(true);
+        complete(binary);
+        var detail = responses.detail(itemId(binary));
+        assertEquals("base64", detail.encoding());
+        assertArrayEquals(new byte[] {0, 1, 2, (byte) 255}, Base64.getDecoder().decode(detail.body()));
+        db.update("DELETE FROM run_responses WHERE run_id=?", itemId(binary));
+        assertEquals("not_recorded", responses.detail(itemId(binary)).state());
+        assertNull(responses.detail(itemId(binary)).body());
+    }
+
+    @Test
+    void responseCiphertextIsBoundToItsRunAndPreventsReplacementOfMissingKeys() throws Exception {
+        setup("/response");
+        String first = manual(false);
+        complete(first);
+        String second = manual(true);
+        complete(second);
+        String ciphertext = Db.text(db.one("SELECT ciphertext FROM run_responses WHERE run_id=?", itemId(second)), "ciphertext");
+        db.update("UPDATE run_responses SET ciphertext=? WHERE run_id=?", ciphertext, itemId(first));
+        assertEquals("decryption_failed", responses.detail(itemId(first)).state());
+        assertNull(responses.detail(itemId(first)).body());
+        assertEquals("complete", responses.detail(itemId(second)).state());
+        var wrongKey = new SecretStore(migrator, lock, Base64.getEncoder().encodeToString(new byte[32]), "ignored");
+        assertEquals("decryption_failed", new RunResponseStore(db, wrongKey).detail(itemId(second)).state());
+        db.update("DELETE FROM request_revisions");
+        Path missing = DIR.resolve("responses-missing-key/master.key");
+        assertThrows(IllegalStateException.class, () -> new SecretStore(migrator, lock, "", missing.toString()));
+        assertFalse(Files.exists(missing));
+    }
+
+    @Test
+    void retentionRemovesEncryptedBodiesButKeepsIndependentDayMarkers() throws Exception {
+        setup("/response");
+        String batch = manual(false);
+        complete(batch);
+        db.update("UPDATE run_items SET finished_at=? WHERE id=?",
+                clock.instant().minusSeconds(31 * 86400L).toString(), itemId(batch));
+        scanner.retention();
+        assertEquals(0, db.count("SELECT COUNT(*) FROM run_items"));
+        assertEquals(0, db.count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(1, db.count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
+        assertEquals(1, db.count("SELECT COUNT(*) FROM request_day_states WHERE request_id=?", request));
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
+        assertEquals(1, hits.get());
     }
 
     @Test
