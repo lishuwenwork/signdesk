@@ -1,0 +1,16 @@
+services:
+  signdesk:
+    build: .
+    ports:
+      - "127.0.0.1:${SIGNDESK_PORT:-8080}:8080"
+    environment:
+      SIGNDESK_ALLOWED_HOSTS: ${SIGNDESK_ALLOWED_HOSTS:-}
+      SIGNDESK_SECRET_KEY: ${SIGNDESK_SECRET_KEY:-}
+    volumes:
+      - signdesk-data:/app/data
+      - signdesk-secrets:/app/secrets
+    restart: unless-stopped
+    stop_grace_period: 35s
+volumes:
+  signdesk-data:
+  signdesk-secrets:

@@ -1,0 +1,44 @@
+# SignDesk v0.1.0 验证记录
+
+日期：2026-10-08（北京时间）。以下记录只描述本次实际执行的检查。
+
+## 后端
+
+Java 21、Maven 3.9.11，在独立临时目录中使用真实 SQLite。41 项测试，0 失败、0 错误、0 跳过。
+
+| 测试类 | 数量 | 验证内容 |
+|---|---:|---|
+| CurlParserTest | 18 | Bash/CMD、原始编码、重复参数和请求头、Body、拒绝文件／shell／不支持选项 |
+| HutoolExecutorTest | 5 | 本地回显的实际 URL／Headers／Cookie／Body、账号隔离、重定向、期限与分类 |
+| ResultRulesTest | 2 | JSON 类型与规则优先级、未知响应 |
+| TlsVerificationTest | 1 | 不可信证书被拒绝；可信但主机名不符被拒绝；可信且主机名匹配成功 |
+| ScheduleSpecTest | 3 | 北京时间／UTC、指定星期、生效时间、跨日与补执行窗口 |
+| StorageQueueIntegrationTest | 10 | 加密与版本冻结、手动幂等、日志清理后的完成标记、计划变更后的去重、取消、重启、过期暂停、迁移备份、错误密码、丢钥拒绝覆盖 |
+| WebContractIntegrationTest | 2 | 使用实际 HTTP 服务预览 cURL；备份可选字段、导入预览与明确替换 |
+
+测试使用本地回显 HTTP 服务和临时测试证书，不发送真实平台请求，也不使用用户凭证。cURL 预览不发送请求。
+
+## 浏览器
+
+Playwright / Chromium 147，2 项浏览器测试通过。运行打包后的真实 Spring Boot 服务，不使用模拟前端 API。
+
+- 新增平台和账号，粘贴完整 cURL，预览 Headers / Body、试算规则并保存。
+- 页面手动执行并查询结果；本地回显确认重复 Query、百分号编码、POST、Cookie、设备头与 JSON Body 完整保留。
+- 查看日志详情、更新 cURL 到版本 2、明确重新执行。
+- 启用平台 09:00 计划，核对后端保存的配置。
+- 普通配置下载不含请求信息；完整备份导出后不含明文凭证，并使用密码成功预览恢复。
+- 页面没有未处理的 JavaScript 异常；1440 像素桌面和 390 像素窄屏检查与截图，窄屏页面无整体横向溢出。
+- 跨站写入返回 403，表单编码写入返回 415，管理接口禁用缓存；正常同来源使用不要求登录。
+
+## 构建
+
+- 前端依赖按 package-lock.json 安装，Vite 生产构建成功。
+- 后端测试与 Spring Boot 单 JAR 打包成功；最终 JAR 包含本次最新前端静态资源。
+- 源码同时提供 Dockerfile、Compose 与 GitHub Actions 构建配置。
+- 前端主 JavaScript 包约 1.05 MB，gzip 约 338 kB。Vite 提示大于 500 kB，未进行专门的加载性能优化。
+
+## 验证边界
+
+没有进行真实签到平台联调、Windows/Docker 实机运行或 24 小时资源与稳定性测量。GitHub Actions 配置不等于已经通过远端 CI；远端结果以仓库 Actions 为准。
+
+可重放范围见 README 的 cURL 支持表。动态签名、短期凭证和验证码需要用户更新请求或进一步适配。服务器需持续运行才能定时执行。

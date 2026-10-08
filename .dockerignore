@@ -1,0 +1,12 @@
+.git
+**/node_modules
+**/target
+frontend/dist
+backend/src/main/resources/static
+**/data
+**/logs
+**/secrets
+**/*.db*
+**/*.key
+.env
+dist
