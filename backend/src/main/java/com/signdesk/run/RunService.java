@@ -351,12 +351,14 @@ public class RunService {
             if (reason != null) continue;
             HutoolRequestExecutor.Result result;
             try {
+                var executionSettings = settings.get();
                 result =
                         http.execute(
                                 catalog.revision(requestId, Db.integer(item, "requestRevision"))
                                         .spec(),
                                 Json.read(Db.text(item, "rulesJson"), ResultRules.class),
-                                settings.get().timeoutSeconds());
+                                executionSettings.timeoutSeconds(),
+                                executionSettings.proxy());
             } catch (Exception e) {
                 result = new HutoolRequestExecutor.Result("failed", null, 0, "请求快照无法解密，请检查原密钥");
             }

@@ -4,6 +4,7 @@ import com.signdesk.common.ApiException;
 import com.signdesk.common.Json;
 import com.signdesk.engine.CurlParser;
 import com.signdesk.engine.ResultRules;
+import com.signdesk.engine.ProxySettings;
 import com.signdesk.platform.CatalogService;
 import com.signdesk.run.RunService;
 import com.signdesk.run.SettingsService;
@@ -217,21 +218,20 @@ public class BackupService {
                                                                                     "businessDate")))
                                                     .toList()
                                             : List.<Completion>of();
+                            var settingsRow = db.one("SELECT * FROM settings WHERE id=1");
                             return new Snapshot(
                                     1,
                                     request.includeRequests(),
                                     new SettingsService.Settings(
                                             true,
-                                            Db.integer(
-                                                    db.one("SELECT * FROM settings WHERE id=1"),
-                                                    "concurrency"),
-                                            Db.integer(
-                                                    db.one("SELECT * FROM settings WHERE id=1"),
-                                                    "timeoutSeconds"),
-                                            Db.integer(
-                                                    db.one("SELECT * FROM settings WHERE id=1"),
-                                                    "retentionDays"),
-                                            1),
+                                            Db.integer(settingsRow, "concurrency"),
+                                            Db.integer(settingsRow, "timeoutSeconds"),
+                                            Db.integer(settingsRow, "retentionDays"),
+                                            1,
+                                            new ProxySettings(
+                                                    Db.text(settingsRow, "proxyMode"),
+                                                    Db.text(settingsRow, "proxyHost"),
+                                                    Db.integer(settingsRow, "proxyPort"))),
                                     platforms,
                                     accounts,
                                     requests,
@@ -316,6 +316,7 @@ public class BackupService {
                 || s.settings().timeoutSeconds() > 120
                 || s.settings().retentionDays() < 1
                 || s.settings().retentionDays() > 365) throw new ApiException("备份设置范围不正确");
+        s.settings().proxy().validated();
         if (s.formatVersion() != 1
                 || s.platforms() == null
                 || s.accounts() == null
@@ -467,11 +468,15 @@ public class BackupService {
                                     c.businessDate());
                         db.update(
                                 "UPDATE settings SET"
-                                    + " paused=1,concurrency=?,timeout_seconds=?,retention_days=?,version=version+1"
+                                    + " paused=1,concurrency=?,timeout_seconds=?,retention_days=?,"
+                                    + " proxy_mode=?,proxy_host=?,proxy_port=?,version=version+1"
                                     + " WHERE id=1",
                                 s.settings().concurrency(),
                                 s.settings().timeoutSeconds(),
-                                s.settings().retentionDays());
+                                s.settings().retentionDays(),
+                                s.settings().proxy().mode(),
+                                s.settings().proxy().host(),
+                                s.settings().proxy().port());
                     });
         } finally {
             runs.endMaintenance();

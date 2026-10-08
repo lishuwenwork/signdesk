@@ -18,18 +18,18 @@ public class DatabaseMigrator {
         Integer version =
                 jdbc.queryForObject(
                         "SELECT COALESCE(MAX(version),0) FROM schema_migrations", Integer.class);
-        if (version > 1)
+        if (version > 2)
             throw new IllegalStateException("Database schema is newer than this application");
-        if (version == 0) {
+        for (int next = version + 1; next <= 2; next++) {
             try (Connection connection = source.getConnection()) {
                 connection.setAutoCommit(false);
                 try {
-                    ScriptUtils.executeSqlScript(connection, new ClassPathResource("db/V1.sql"));
+                    ScriptUtils.executeSqlScript(connection, new ClassPathResource("db/V" + next + ".sql"));
                     connection
                             .createStatement()
                             .executeUpdate(
-                                    "INSERT INTO schema_migrations"
-                                            + " VALUES(1,strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
+                                            "INSERT INTO schema_migrations"
+                                                    + " VALUES(" + next + ",strftime('%Y-%m-%dT%H:%M:%fZ','now'))");
                     connection.commit();
                 } catch (Exception e) {
                     connection.rollback();

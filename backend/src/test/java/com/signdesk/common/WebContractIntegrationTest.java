@@ -43,6 +43,28 @@ class WebContractIntegrationTest {
     @Autowired SettingsService settings;
     final HttpClient client = HttpClient.newHttpClient();
 
+    @Test
+    void settingsApiPersistsProxyAndValidatesBeforeWriting() throws Exception {
+        var current = settings.get();
+        var uri = URI.create("http://127.0.0.1:" + environment.getProperty("local.server.port") + "/api/settings");
+        var payload = Json.map(Json.write(current));
+        payload.put("proxy", Map.of("mode", "http", "host", "127.0.0.1", "port", 12345));
+        var response = client.send(HttpRequest.newBuilder(uri).header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(Json.write(payload))).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode());
+        var fetched = client.send(HttpRequest.newBuilder(uri).GET().build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(12345, Json.tree(fetched.body()).path("proxy").path("port").asInt());
+        payload.put("version", settings.get().version());
+        payload.put("proxy", Map.of("mode", "http", "host", "127.0.0.1", "port", 65536));
+        var invalid = client.send(HttpRequest.newBuilder(uri).header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(Json.write(payload))).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, invalid.statusCode());
+        assertEquals(12345, settings.get().proxy().port());
+        var saved = settings.get();
+        settings.save(new SettingsService.Settings(current.paused(), current.concurrency(),
+                current.timeoutSeconds(), current.retentionDays(), saved.version(), current.proxy()));
+    }
+
     HttpResponse<String> post(String path, Object body) throws Exception {
         return client.send(
                 HttpRequest.newBuilder(

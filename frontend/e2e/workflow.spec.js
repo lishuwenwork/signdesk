@@ -112,3 +112,41 @@ test('write boundaries reject cross-site and form requests without adding login'
   const status = await request.get('/api/system/status')
   expect(status.headers()['cache-control']).toBe('no-store')
 })
+
+test('saved HTTP proxy survives page reload and routes the next execution', async ({ page, request }) => {
+  const previous = await (await request.get('/api/settings')).json()
+  await page.goto('/#/settings')
+  await page.getByRole('combobox', { name: '请求代理模式' }).press('ArrowDown')
+  await page.getByRole('option', { name: 'HTTP 代理', exact: true }).click()
+  await page.getByRole('textbox', { name: '代理主机', exact: true }).fill('127.0.0.1')
+  await page.getByRole('spinbutton', { name: '代理端口', exact: true }).fill('18081')
+  await page.getByRole('button', { name: '保存设置', exact: true }).click()
+  await expect(page.getByText('设置已保存', { exact: true })).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('textbox', { name: '代理主机', exact: true })).toHaveValue('127.0.0.1')
+  await expect(page.getByRole('spinbutton', { name: '代理端口', exact: true })).toHaveValue('18081')
+  const saved = await (await request.get('/api/settings')).json()
+  expect(saved.proxy).toEqual({ mode: 'http', host: '127.0.0.1', port: 18081 })
+
+  const platform = await (await request.post('/api/platforms', {
+    data: { name: '代理测试平台', note: '', enabled: true, version: 1 },
+  })).json()
+  const account = await (await request.post(`/api/platforms/${platform.id}/accounts`, {
+    data: { alias: '代理测试账号', enabled: true, version: 1 },
+  })).json()
+  const created = await (await request.post(`/api/accounts/${account.id}/requests`, {
+    data: { name: '代理请求', enabled: true, curl: "curl 'http://127.0.0.1:1/check?proxy=on'" },
+  })).json()
+  const run = await (await request.post('/api/runs', {
+    data: { scope: 'request', id: created.id, force: false, key: 'proxy-browser-fixture' },
+  })).json()
+  await expect.poll(async () => {
+    const batch = await (await request.get(`/api/batches/${run.batchIds[0]}`)).json()
+    return batch.items[0].status
+  }).toBe('success')
+  const received = await (await request.get('http://127.0.0.1:18081/received')).json()
+  expect(received.at(-1).url).toBe('http://127.0.0.1:1/check?proxy=on')
+  const current = await (await request.get('/api/settings')).json()
+  const restored = await request.put('/api/settings', { data: { ...previous, version: current.version } })
+  expect(restored.ok()).toBe(true)
+})

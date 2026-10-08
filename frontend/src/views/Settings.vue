@@ -2,7 +2,8 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, report, confirm } from '../api'
-const form = reactive({ paused: false, concurrency: 2, timeoutSeconds: 20, retentionDays: 30, version: 1 })
+const form = reactive({ paused: false, concurrency: 2, timeoutSeconds: 20, retentionDays: 30, version: 1,
+  proxy: { mode: 'system', host: '', port: 0 } })
 const saving = ref(false),
   includeRequests = ref(false),
   password = ref(''),
@@ -119,7 +120,21 @@ async function importBackup() {
         ><el-form-item label="全局请求超时上限（秒）"
           ><el-input-number v-model="form.timeoutSeconds" :min="1" :max="120" /></el-form-item
         ><el-form-item label="日志保留（天）"
-          ><el-input-number v-model="form.retentionDays" :min="1" :max="365" /></el-form-item></el-form
+          ><el-input-number v-model="form.retentionDays" :min="1" :max="365" /></el-form-item
+        ><el-form-item label="请求代理"
+          ><el-select v-model="form.proxy.mode" aria-label="请求代理模式">
+            <el-option label="跟随 Java 启动配置" value="system" />
+            <el-option label="直连" value="direct" />
+            <el-option label="HTTP 代理" value="http" />
+            <el-option label="SOCKS5 代理" value="socks" />
+          </el-select></el-form-item
+        ><template v-if="['http', 'socks'].includes(form.proxy.mode)">
+          <el-form-item label="代理主机"><el-input v-model="form.proxy.host" aria-label="代理主机" placeholder="例如 127.0.0.1，不含协议和端口" /></el-form-item>
+          <el-form-item label="代理端口"><el-input-number v-model="form.proxy.port" aria-label="代理端口" :min="1" :max="65535" /></el-form-item>
+        </template>
+        <p class="muted">v2rayN 用户选择 HTTP 代理，填写 127.0.0.1 和实际 HTTP／混合代理端口。代理运行在 Java 服务所在电脑；当前支持无需认证的代理。</p>
+        <p class="muted">保存后对新开始发送的请求生效，重启后保留。已在执行的请求继续使用原配置。</p>
+      </el-form
       ><el-button type="primary" :loading="saving" @click="save">保存设置</el-button>
       <div class="inline-info">
         超时或断开会产生待确认状态，系统不自动重试不确定请求。凭证过期需更新完整 cURL。

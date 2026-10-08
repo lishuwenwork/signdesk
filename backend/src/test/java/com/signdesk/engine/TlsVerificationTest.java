@@ -126,6 +126,18 @@ class TlsVerificationTest {
                                     20)
                             .status());
             assertEquals(1, hits.get());
+            try (var proxy = new TunnelProxyFixture(port, false)) {
+                var routing = new ProxySettings("http", "127.0.0.1", proxy.port());
+                var spec = parser.parse("curl 'https://localhost:" + port + "/?sig=%2f%2F' --max-time 2").spec();
+                assertEquals("success", http.execute(spec, ResultRules.defaults(), 20, routing).status());
+                assertEquals(2, hits.get());
+                assertTrue(proxy.target.get().startsWith("CONNECT localhost:"));
+                SSLContext.setDefault(previous);
+                var rejected = http.execute(spec, ResultRules.defaults(), 20, routing);
+                assertEquals("unknown", rejected.status());
+                assertTrue(rejected.summary().contains("TLS"), rejected.summary());
+                assertEquals(2, hits.get(), "proxy must not bypass certificate verification");
+            }
         } finally {
             SSLContext.setDefault(previous);
             server.stop(0);

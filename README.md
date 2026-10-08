@@ -87,6 +87,19 @@ docker compose up --build -d
 
 Compose 默认只向本机映射 8080，数据和密钥分别放在持久卷。Dockerfile 构建时会运行后端测试。本次交付没有在 Docker 或 Windows 环境实测，实际检查范围见 `docs/validation.md`。
 
+## 配置请求代理
+
+在「设置与备份 → 请求代理」选择模式，填写代理主机和端口后保存。
+
+- **HTTP 代理**：支持 HTTP 请求和 HTTPS CONNECT 隧道。使用 v2rayN 时填写 `127.0.0.1` 和它实际的 HTTP／混合代理端口。
+- **SOCKS5 代理**：填写 SOCKS5 代理主机和端口。
+- **直连**：忽略 Java 启动时的代理参数。
+- **跟随 Java 启动配置**：默认模式，使用 Java 的代理选择器，兼容 `-Dhttp.proxyHost`、`-Dhttps.proxyHost`、`-DsocksProxyHost` 等设置。Java 默认不读取 `HTTP_PROXY` / `HTTPS_PROXY`；Windows 系统代理需在启动时启用 `-Djava.net.useSystemProxies=true`。
+
+代理配置保存在 SQLite，保存后对新开始发送的请求生效，正在执行的请求继续使用原配置；重启后保留，普通配置和加密备份也包含这些设置。旧数据库自动迁移，旧备份缺少代理设置时恢复为默认模式。迁移到新数据库版本后应使用新版程序。
+
+配置了应用内 HTTP／SOCKS5 代理后，启动 Java 时无需再附加代理参数。代理必须运行在 Java 服务能够访问的位置；本机 v2rayN 需要保持运行。当前支持无需用户名／密码认证的代理，不支持在导入的 cURL 中指定代理。HTTPS 始终验证证书和主机名，代理不可用时不回退直连，也不自动重试待确认请求。
+
 ## 开始使用
 
 1. 在「平台与账号」新增平台和账号，再点击「添加请求」。
@@ -110,7 +123,7 @@ HTTP 401 自动标记凭证过期；用户配置的过期业务规则也会暂�
 | 压缩 | gzip / deflate / identity，拒绝 br / zstd |
 | 重定向 | 明确 `-L` 时，同来源最多 5 跳；301/302 POST 转 GET，303 转 GET，307/308 保持方法和 Body；跨来源停止，不转发凭证 |
 | 超时 | 无参数时继承全局；命令中的 max-time / connect-timeout 与全局上限取最严格值，connect-timeout 在本版也限制总执行期限 |
-| 不支持 | `-L` 同时显式 `-X`、文件上传、`@文件`、代理、客户端证书、HTTP/2 强制、关闭 TLS 验证、命令管道、外部配置文件 |
+| 不支持 | `-L` 同时显式 `-X`、文件上传、`@文件`、cURL 中的代理选项、客户端证书、HTTP/2 强制、关闭 TLS 验证、命令管道、外部配置文件 |
 
 手工 Host、Connection、Transfer-Encoding 等传输头会被拒绝；Content-Length 提示按实际 Body 字节计算。Hutool/JDK 的传输头、HTTP 指纹和浏览器可能不同，完整 cURL 是一次请求快照。时间戳、一次性签名、Token、IP 绑定和验证码不能靠重放长期维持有效。CMD 中非 ASCII 请求体按 UTF-8 处理，需核对目标平台的编码要求。
 

@@ -16,6 +16,7 @@ import java.net.URLConnection;
 import java.net.URLStreamHandler;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -40,20 +41,30 @@ public class HutoolRequestExecutor implements AutoCloseable {
     }
 
     public Result execute(RequestSpec spec, ResultRules rules, int defaultTimeout) {
+        return execute(spec, rules, defaultTimeout, ProxySettings.system());
+    }
+
+    public Result execute(
+            RequestSpec spec, ResultRules rules, int defaultTimeout, ProxySettings proxySettings) {
         long start = System.nanoTime();
         int timeout =
                 spec.timeoutMillis() == 0
                         ? defaultTimeout * 1000
                         : Math.min(spec.timeoutMillis(), defaultTimeout * 1000);
         AtomicReference<HttpURLConnection> connection = new AtomicReference<>();
+        AtomicBoolean expired = new AtomicBoolean();
+        Integer httpStatus = null;
+        String phase = "校验目标地址";
         ScheduledFuture<?> watchdog = null;
         try {
+            Proxy proxy = proxySettings.toProxy();
             RequestSpec current = spec;
             for (int hop = 0; hop <= 5; hop++) {
                 policy.validate(current.rawUrl());
                 int remaining =
                         timeout - (int) TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-                if (remaining <= 0) return result("unknown", null, start, "达到执行期限，结果待确认");
+                if (remaining <= 0)
+                    return result("unknown", httpStatus, start, timeoutSummary(phase, timeout));
                 final String rawUrl = current.rawUrl();
                 // The handler creates the connection with the original URL, bypassing Hutool
                 // normalization.
@@ -62,14 +73,17 @@ public class HutoolRequestExecutor implements AutoCloseable {
                             @Override
                             protected URLConnection openConnection(URL url)
                                     throws java.io.IOException {
-                                return openConnection(url, Proxy.NO_PROXY);
+                                HttpURLConnection c =
+                                        (HttpURLConnection) new URL(rawUrl).openConnection();
+                                connection.set(c);
+                                return c;
                             }
 
                             @Override
-                            protected URLConnection openConnection(URL url, Proxy proxy)
+                            protected URLConnection openConnection(URL url, Proxy selectedProxy)
                                     throws java.io.IOException {
                                 HttpURLConnection c =
-                                        (HttpURLConnection) new URL(rawUrl).openConnection(proxy);
+                                        (HttpURLConnection) new URL(rawUrl).openConnection(selectedProxy);
                                 connection.set(c);
                                 return c;
                             }
@@ -78,6 +92,7 @@ public class HutoolRequestExecutor implements AutoCloseable {
                         HttpConfig.create()
                                 .setConnectionTimeout(remaining)
                                 .setReadTimeout(remaining)
+                                .setProxy(proxy)
                                 .setMaxRedirectCount(0)
                                 .setUseDefaultContentTypeIfNull(false)
                                 .setHostnameVerifier(
@@ -105,13 +120,17 @@ public class HutoolRequestExecutor implements AutoCloseable {
                 watchdog =
                         deadlines.schedule(
                                 () -> {
+                                    expired.set(true);
                                     var c = connection.get();
                                     if (c != null) c.disconnect();
                                 },
                                 remaining,
                                 TimeUnit.MILLISECONDS);
+                phase = "连接/发送请求";
                 try (HttpResponse response = request.executeAsync()) {
                     int status = response.getStatus();
+                    httpStatus = status;
+                    phase = "读取响应";
                     if (java.util.Set.of(301, 302, 303, 307, 308).contains(status)
                             && current.followRedirects()) {
                         String location = response.header("Location");
@@ -168,7 +187,7 @@ public class HutoolRequestExecutor implements AutoCloseable {
                                 return result("unknown", status, start, "响应超过 1 MiB，结果待确认");
                             bytes.write(buffer, 0, read);
                             if (TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) > timeout)
-                                return result("unknown", status, start, "达到执行期限，结果待确认");
+                                return result("unknown", status, start, timeoutSummary(phase, timeout));
                         }
                     }
                     String classification =
@@ -190,12 +209,40 @@ public class HutoolRequestExecutor implements AutoCloseable {
         } catch (com.signdesk.common.ApiException e) {
             return result("failed", null, start, e.getMessage());
         } catch (Exception e) {
-            return result("unknown", null, start, "连接异常或超时，可能已发送；请核对平台后再执行");
+            return result("unknown", httpStatus, start,
+                    expired.get() ? timeoutSummary(phase, timeout) : networkSummary(e, phase, timeout));
         } finally {
             if (watchdog != null) watchdog.cancel(false);
             var c = connection.get();
             if (c != null) c.disconnect();
         }
+    }
+
+    private static String timeoutSummary(String phase, int timeout) {
+        return phase + "：达到执行期限（TIMEOUT，有效上限 " + timeout + " ms）；"
+                + "请检查代理和超时设置；结果待确认，请核对平台后再执行";
+    }
+
+    private static String networkSummary(Exception error, String phase, int timeout) {
+        String reason = "网络异常（NETWORK）";
+        // Only fixed descriptions and exception types; exception messages can contain credentials.
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof java.net.SocketTimeoutException)
+                return timeoutSummary(phase, timeout);
+            if (cause instanceof java.security.cert.CertificateException
+                    || cause instanceof javax.net.ssl.SSLPeerUnverifiedException) {
+                reason = "证书或主机名校验失败（TLS_CERTIFICATE）";
+                break;
+            }
+            if (cause instanceof javax.net.ssl.SSLException)
+                reason = "TLS 握手或连接失败（TLS）";
+            else if (cause instanceof java.net.UnknownHostException)
+                reason = "目标或代理主机无法解析（DNS）";
+            else if (cause instanceof java.net.ConnectException
+                    || cause instanceof java.net.NoRouteToHostException)
+                reason = "无法连接目标或代理（CONNECT）";
+        }
+        return phase + "：" + reason + "；请检查网络和代理；结果待确认，请核对平台后再执行";
     }
 
     private Result result(String status, Integer http, long start, String text) {

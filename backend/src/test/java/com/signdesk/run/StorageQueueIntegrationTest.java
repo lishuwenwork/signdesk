@@ -7,6 +7,7 @@ import com.signdesk.common.ApiException;
 import com.signdesk.common.Json;
 import com.signdesk.engine.CurlParser;
 import com.signdesk.engine.ResultRules;
+import com.signdesk.engine.ProxySettings;
 import com.signdesk.platform.CatalogService;
 import com.signdesk.platform.PlatformMapper;
 import com.signdesk.schedule.ScheduleService;
@@ -209,6 +210,47 @@ class StorageQueueIntegrationTest {
     }
 
     @Test
+    void queueUsesPersistedProxyWithoutRestartAndRejectsInvalidSettings() throws Exception {
+        setup("/ok");
+        catalog.replaceRequest(request, "curl 'http://127.0.0.1:1/ok' --data-raw 'proxy-body'", 1);
+        var previous = settings.get();
+        var proxy = new ProxySettings("http", "127.0.0.1", server.getAddress().getPort());
+        settings.save(new SettingsService.Settings(true, 2, 3, 30, previous.version(), proxy));
+        assertEquals(proxy, new SettingsService(db).get().proxy());
+        var saved = settings.get();
+        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
+                true, 2, 3, 30, saved.version(), new ProxySettings("http", "http://user:secret@proxy", 80))));
+        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
+                true, 2, 3, 30, saved.version(), new ProxySettings("http", "localhost", 0))));
+        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
+                true, 2, 3, 30, saved.version(), new ProxySettings("other", "localhost", 80))));
+        assertEquals(saved, settings.get(), "invalid saves must not change stored settings");
+        String batch = manual(false);
+        complete(batch);
+        assertEquals("success", status(batch));
+        assertEquals(List.of("proxy-body"), bodies);
+        assertEquals(1, hits.get());
+        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
+                true, 2, 3, 30, previous.version(), ProxySettings.system())));
+        assertEquals(proxy, settings.get().proxy(), "stale saves must not change proxy settings");
+    }
+
+    @Test
+    void legacyBackupWithoutProxyFieldsStillRestores() {
+        setup("/ok");
+        var exported = (Map<String, Object>) backups.export(new BackupService.Request(null, false, null, false));
+        var backup = Json.map(Json.write(exported));
+        var payload = (Map<String, Object>) backup.get("payload");
+        ((Map<String, Object>) payload.get("settings")).remove("proxy");
+        var previous = settings.get();
+        settings.save(new SettingsService.Settings(true, 2, 20, 30, previous.version(),
+                new ProxySettings("http", "127.0.0.1", 12345)));
+        backups.restore(new BackupService.Request(null, false, backup, true));
+        assertEquals(ProxySettings.system(), settings.get().proxy());
+        assertTrue(settings.get().paused());
+    }
+
+    @Test
     void actualSqliteSecretsAreEncryptedAndVersionIsFrozen() throws Exception {
         setup("/ok");
         String batch = manual(false);
@@ -380,7 +422,8 @@ class StorageQueueIntegrationTest {
         complete(batch);
         String password = "local-test-backup-password";
         var previous = settings.get();
-        settings.save(new SettingsService.Settings(true, 3, 7, 45, previous.version()));
+        var proxy = new ProxySettings("http", "127.0.0.1", 12345);
+        settings.save(new SettingsService.Settings(true, 3, 7, 45, previous.version(), proxy));
         var encrypted =
                 (Map<String, Object>)
                         backups.export(new BackupService.Request(password, true, null, false));
@@ -405,6 +448,7 @@ class StorageQueueIntegrationTest {
         assertEquals(3, settings.get().concurrency());
         assertEquals(7, settings.get().timeoutSeconds());
         assertEquals(45, settings.get().retentionDays());
+        assertEquals(proxy, settings.get().proxy());
         assertEquals(
                 1, db.count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
     }
