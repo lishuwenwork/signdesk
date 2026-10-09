@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.RequestRevisionMapper">
+<select id="query" resultType="com.signdesk.domain.RequestRevision">SELECT request_id,revision,raw_curl,spec_json,created_at FROM request_revisions WHERE request_id=#{requestId} AND revision=#{revision}</select>
+  <insert id="insert">INSERT INTO request_revisions(request_id,revision,raw_curl,spec_json,created_at) VALUES(#{requestId},#{revision},#{rawCurl},#{specJson},#{createdAt})</insert>
+</mapper>

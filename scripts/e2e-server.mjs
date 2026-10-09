@@ -48,7 +48,7 @@ const fixture = createServer(async (request, response) => {
 })
 fixture.listen(18081, '127.0.0.1')
 const executable = process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java'
-const backend = spawn(executable, ['-jar', jar], { env: { ...process.env, SIGNDESK_PORT: '18080', SIGNDESK_BIND_ADDRESS: '127.0.0.1', SIGNDESK_DATA_DIR: path.join(directory, 'data'), SIGNDESK_KEY_FILE: path.join(directory, 'master.key'), SIGNDESK_SECRET_KEY: '', SIGNDESK_ALLOWED_HOSTS: '127.0.0.1' }, stdio: 'inherit' })
+const backend = spawn(executable, ['-jar', jar], { env: { ...process.env, SIGNDESK_PORT: '18080', SIGNDESK_BIND_ADDRESS: '127.0.0.1', SIGNDESK_DATA_DIR: path.join(directory, 'data'), SIGNDESK_ALLOWED_HOSTS: '127.0.0.1' }, stdio: 'inherit' })
 let stopped = false
 function stop() { if (stopped) return; stopped = true; fixture.close(); backend.kill('SIGTERM') }
 process.on('SIGINT', stop); process.on('SIGTERM', stop)

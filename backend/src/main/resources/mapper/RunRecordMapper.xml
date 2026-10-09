@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.RunRecordMapper">
+<select id="active" resultType="com.signdesk.domain.vo.BatchVo">
+    SELECT b.*,p.name,(SELECT COUNT(*) FROM run_items i WHERE i.batch_id=b.id) AS total,
+    (SELECT COUNT(*) FROM run_items i WHERE i.batch_id=b.id AND i.status NOT IN('queued','running')) AS done
+    FROM run_batches b JOIN platforms p ON p.id=b.platform_id WHERE b.status IN('queued','running') ORDER BY b.created_at
+  </select>
+  <select id="queryBatch" resultType="com.signdesk.domain.vo.BatchVo">SELECT * FROM run_batches WHERE id=#{id}</select>
+  <select id="batchItems" resultType="com.signdesk.domain.vo.BatchItemVo">
+    SELECT i.id,i.request_id,i.request_revision,i.status,i.safe_summary,r.name,a.alias
+    FROM run_items i JOIN requests r ON r.id=i.request_id JOIN accounts a ON a.id=r.account_id WHERE batch_id=#{id} ORDER BY ordinal
+  </select>
+  <sql id="detailColumns">i.id,i.batch_id,i.request_id,i.request_revision,i.status,i.http_status,i.duration_ms,i.safe_summary,i.started_at,i.finished_at,b.business_date,b.source,b.created_at</sql>
+  <select id="queryDetail" resultType="com.signdesk.domain.vo.RunDetailVo">SELECT <include refid="detailColumns"/> FROM run_items i JOIN run_batches b ON b.id=i.batch_id WHERE i.id=#{id}</select>
+  <sql id="logJoin">FROM run_items i JOIN run_batches b ON b.id=i.batch_id JOIN requests r ON r.id=i.request_id JOIN accounts a ON a.id=r.account_id JOIN platforms p ON p.id=b.platform_id</sql>
+  <sql id="filters"><where>
+    <if test="platformId != null and platformId != ''">AND b.platform_id=#{platformId}</if>
+    <if test="status != null and status != ''">AND i.status=#{status}</if>
+    <if test="source != null and source != ''">AND b.source=#{source}</if>
+  </where></sql>
+  <select id="countLogs" resultType="long">SELECT COUNT(*) <include refid="logJoin"/> <include refid="filters"/></select>
+  <select id="queryLogs" resultType="com.signdesk.domain.vo.RunLogVo">
+    SELECT <include refid="detailColumns"/>,p.name AS platform_name,a.alias,r.name AS request_name
+    <include refid="logJoin"/> <include refid="filters"/> ORDER BY b.created_at DESC,i.rowid DESC LIMIT #{size} OFFSET #{offset}
+  </select>
+  <delete id="clearExpired">DELETE FROM run_items WHERE finished_at IS NOT NULL AND finished_at &lt; #{before} AND status NOT IN('queued','running')</delete>
+</mapper>

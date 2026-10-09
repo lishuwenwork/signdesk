@@ -14,6 +14,8 @@ public record ProxySettings(String mode, String host, int port) {
         host = host == null ? "" : host.trim();
     }
 
+    @Override public String toString() { return "ProxySettings[redacted]"; }
+
     public static ProxySettings system() {
         return new ProxySettings("system", "", 0);
     }

@@ -176,7 +176,7 @@ const bodyText = computed(() => {
               placeholder="curl 'https://example.com/api/checkin' -H 'Cookie: ...' --data-raw '{...}'" class="mono" />
           </el-form-item>
         </el-form>
-        <div class="muted">支持 Bash / Windows CMD 常见格式。请求在服务器整体加密保存，不存入浏览器本地存储。</div>
+        <div class="muted">支持 Bash / Windows CMD 常见格式。请求及凭证在服务器明文保存，请限制数据目录访问；不存入浏览器本地存储。</div>
         <div class="dialog-footer">
           <el-button @click="visible = false">取消</el-button>
           <el-button type="primary" :loading="busy" @click="parse">解析预览</el-button>

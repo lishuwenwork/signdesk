@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.ScheduleQueryMapper">
+<select id="queryList" resultType="com.signdesk.domain.model.ScheduleRow">SELECT s.*,p.name,p.enabled AS platform_enabled FROM platform_schedules s JOIN platforms p ON p.id=s.platform_id ORDER BY p.rowid</select>
+  <select id="enabledPlans" resultType="com.signdesk.domain.PlatformSchedule">SELECT s.* FROM platform_schedules s JOIN platforms p ON p.id=s.platform_id WHERE s.enabled=1 AND p.enabled=1</select>
+</mapper>

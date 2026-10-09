@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!-- Test-only statement: proves configured XML discovery and bound SQLite parameters. -->
+<mapper namespace="com.signdesk.mapper.PlatformMapper">
+  <select id="foundationVersion" parameterType="string" resultType="java.lang.Integer">
+    SELECT version FROM platforms WHERE id = #{id}
+  </select>
+</mapper>

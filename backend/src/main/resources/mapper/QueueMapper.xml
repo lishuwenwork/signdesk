@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.QueueMapper">
+<sql id="activeJoin">FROM run_items i JOIN requests r ON r.id=i.request_id JOIN accounts a ON a.id=r.account_id WHERE i.status IN('queued','running')</sql>
+  <select id="activeForPlatform" resultType="long">SELECT COUNT(*) <include refid="activeJoin"/> AND a.platform_id=#{id}</select>
+  <select id="activeForAccount" resultType="long">SELECT COUNT(*) <include refid="activeJoin"/> AND a.id=#{id}</select>
+  <select id="activeForRequest" resultType="long">SELECT COUNT(*) <include refid="activeJoin"/> AND r.id=#{id}</select>
+  <select id="activeCount" resultType="long">SELECT COUNT(*) FROM run_items WHERE status IN('queued','running')</select>
+  <select id="platformForRequest" resultType="string">SELECT a.platform_id FROM requests r JOIN accounts a ON a.id=r.account_id WHERE r.id=#{id}</select>
+  <select id="eligible" resultType="com.signdesk.domain.RequestDefinition">
+    SELECT r.* FROM requests r JOIN accounts a ON a.id=r.account_id
+    WHERE a.platform_id=#{platformId} AND a.enabled=1 AND r.enabled=1
+    <if test="requestId != null">AND r.id=#{requestId}</if>
+    AND NOT EXISTS(SELECT 1 FROM run_items i WHERE i.request_id=r.id AND i.status IN('queued','running'))
+    ORDER BY a.sort_order,a.rowid,r.sort_order,r.rowid
+  </select>
+  <select id="queuedBatches" resultType="com.signdesk.domain.RunBatch">SELECT * FROM run_batches WHERE status='queued' ORDER BY created_at,rowid LIMIT 100</select>
+  <update id="claimBatch">
+    UPDATE run_batches SET status='running' WHERE id=#{id} AND status='queued'
+    AND NOT EXISTS(SELECT 1 FROM run_batches other WHERE other.platform_id=run_batches.platform_id AND other.status='running')
+  </update>
+  <select id="gate" resultType="com.signdesk.domain.model.RunGate">
+    SELECT b.cancel_requested,p.enabled AS platform_enabled,a.enabled AS account_enabled,r.enabled,r.auth_paused,
+      EXISTS(SELECT 1 FROM daily_completions d WHERE d.request_id=r.id AND d.business_date=#{date}) AS completed,
+      EXISTS(SELECT 1 FROM request_day_states d WHERE d.request_id=r.id AND d.business_date=#{date} AND d.unknown_pending=1) AS unknown_pending
+    FROM run_batches b JOIN platforms p ON p.id=b.platform_id JOIN requests r ON r.id=#{requestId}
+    JOIN accounts a ON a.id=r.account_id WHERE b.id=#{batchId}
+  </select>
+  <update id="skip">UPDATE run_items SET status=#{status},safe_summary=#{summary},finished_at=#{now} WHERE id=#{id} AND status='queued'</update>
+  <update id="start">UPDATE run_items SET status='running',started_at=#{now} WHERE id=#{id} AND status='queued'</update>
+  <update id="complete">UPDATE run_items SET status=#{status},http_status=#{httpStatus,jdbcType=INTEGER},duration_ms=#{durationMs},safe_summary=#{summary},finished_at=#{now} WHERE id=#{id} AND status='running'</update>
+  <insert id="saveCompletion">INSERT INTO daily_completions(request_id,business_date,completed_run_id) VALUES(#{requestId},#{date},#{runId}) ON CONFLICT(request_id,business_date) DO UPDATE SET completed_run_id=excluded.completed_run_id</insert>
+  <insert id="savePending">INSERT INTO request_day_states(request_id,business_date,unknown_pending) VALUES(#{requestId},#{date},#{pending}) ON CONFLICT(request_id,business_date) DO UPDATE SET unknown_pending=excluded.unknown_pending</insert>
+  <update id="pauseCredentials">UPDATE requests SET auth_paused=1,version=version+1 WHERE id=#{requestId} AND current_revision=#{revision}</update>
+  <insert id="recoverPending">INSERT INTO request_day_states(request_id,business_date,unknown_pending) SELECT i.request_id,b.business_date,1 FROM run_items i JOIN run_batches b ON b.id=i.batch_id WHERE i.status='running' ON CONFLICT(request_id,business_date) DO UPDATE SET unknown_pending=1</insert>
+  <update id="recoverItems">UPDATE run_items SET status='unknown',safe_summary='服务上次中断，发送结果待确认',finished_at=#{now} WHERE status='running'</update>
+  <update id="recoverBatches">UPDATE run_batches SET status='queued' WHERE status='running'</update>
+  <insert id="unfinishedPending">INSERT INTO request_day_states(request_id,business_date,unknown_pending) SELECT i.request_id,b.business_date,1 FROM run_items i JOIN run_batches b ON b.id=i.batch_id WHERE i.batch_id=#{batchId} AND i.status='running' ON CONFLICT(request_id,business_date) DO UPDATE SET unknown_pending=1</insert>
+  <update id="unfinishedItems">UPDATE run_items SET status='unknown',safe_summary='执行过程异常，结果待确认',finished_at=#{now} WHERE batch_id=#{batchId} AND status='running'</update>
+  <update id="finishBatch">UPDATE run_batches SET status=CASE WHEN EXISTS(SELECT 1 FROM run_items i WHERE i.batch_id=run_batches.id AND i.status='queued') THEN 'queued' ELSE 'completed' END WHERE id=#{id} AND status IN('queued','running')</update>
+  <update id="cancelBatch">UPDATE run_batches SET cancel_requested=1 WHERE id=#{id}</update>
+  <update id="cancelItems">UPDATE run_items SET status='cancelled',safe_summary='取消剩余队列',finished_at=#{now} WHERE batch_id=#{batchId} AND status='queued'</update>
+  <update id="finishCancelledBatch">UPDATE run_batches SET status='completed' WHERE id=#{id} AND status='queued'</update>
+</mapper>

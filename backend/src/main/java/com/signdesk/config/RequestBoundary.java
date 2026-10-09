@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Map;
@@ -27,7 +28,10 @@ public class RequestBoundary extends OncePerRequestFilter {
         if (request.getRequestURI().startsWith("/api/")) {
             response.setHeader("Cache-Control", "no-store");
             if (request.getContentLengthLong() > 12582912) {
-                reject(response, 413, "请求数据过大");
+                reject(
+                        response,
+                        request.getRequestURI().startsWith("/api/backups/") ? 400 : 413,
+                        "请求数据超过12 MiB");
                 return;
             }
             if (!request.getMethod().equals("GET")) {
@@ -55,10 +59,32 @@ public class RequestBoundary extends OncePerRequestFilter {
                         return;
                     }
                 }
-                if (type == null || !type.toLowerCase().startsWith("application/json")) {
+                if (type == null
+                        || !type.toLowerCase(java.util.Locale.ROOT)
+                                .startsWith("application/json")) {
                     reject(response, 415, "管理写接口只接受 application/json");
                     return;
                 }
+                var bytes = new ByteArrayOutputStream();
+                var input = request.getInputStream();
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read =
+                                input.read(
+                                        buffer,
+                                        0,
+                                        Math.min(buffer.length, 12582913 - bytes.size())))
+                        != -1) {
+                    bytes.write(buffer, 0, read);
+                    if (bytes.size() > 12582912) {
+                        reject(
+                                response,
+                                request.getRequestURI().startsWith("/api/backups/") ? 400 : 413,
+                                "请求数据超过12 MiB");
+                        return;
+                    }
+                }
+                request = new BoundedJsonRequest(request, bytes.toByteArray());
             }
         }
         chain.doFilter(request, response);

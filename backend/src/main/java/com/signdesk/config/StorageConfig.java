@@ -1,5 +1,6 @@
 package com.signdesk.config;
 
+import com.signdesk.storage.DatabaseInitializer;
 import com.signdesk.storage.InstanceLock;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -24,11 +25,16 @@ public class StorageConfig {
         return new InstanceLock(dir);
     }
 
+    @Bean
+    DatabaseInitializer databaseInitializer(InstanceLock lock) {
+        return new DatabaseInitializer(lock.directory().resolve("signdesk.db"));
+    }
+
     @Bean(destroyMethod = "close")
-    DataSource dataSource(InstanceLock lock) {
+    DataSource dataSource(DatabaseInitializer initializer) {
         HikariConfig config = new HikariConfig();
         config.setDriverClassName("org.sqlite.JDBC");
-        config.setJdbcUrl("jdbc:sqlite:" + lock.directory().resolve("signdesk.db"));
+        config.setJdbcUrl("jdbc:sqlite:" + initializer.database());
         config.setMaximumPoolSize(1);
         config.setMinimumIdle(1);
         config.setConnectionTimeout(10000);

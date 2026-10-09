@@ -17,3 +17,4 @@ secrets/
 test-results/
 playwright-report/
 dist/
+.claude/

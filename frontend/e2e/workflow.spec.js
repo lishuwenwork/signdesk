@@ -1,10 +1,65 @@
 import { test, expect } from '@playwright/test'
 import { readFile } from 'node:fs/promises'
 
+const createdPlatforms = new Set()
+test.afterEach(async ({ playwright }) => {
+  const cleanup = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  try {
+    for (const id of createdPlatforms) {
+      await cleanup.delete(`/api/platforms/${id}`, { data: {} })
+      createdPlatforms.delete(id)
+    }
+  } finally { await cleanup.dispose() }
+})
+
+async function downloadBackup(page, info, includeRequests) {
+  const requestPromise = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/backups/export')
+  const downloadPromise = page.waitForEvent('download')
+  await page.getByRole('button', { name: includeRequests ? '导出完整备份' : '导出配置', exact: true }).click()
+  expect((await requestPromise).postDataJSON()).toEqual({ includeRequests })
+  const download = await downloadPromise
+  expect(download.suggestedFilename()).toMatch(includeRequests ? /^signdesk-full-backup-\d+\.json$/ : /^signdesk-config-\d+\.json$/)
+  const filename = info.outputPath(includeRequests ? 'full-backup.json' : 'config.json')
+  await download.saveAs(filename)
+  const text = await readFile(filename, 'utf8'), backup = JSON.parse(text)
+  expect(backup.format).toBe('signdesk-plain-v1')
+  expect(Object.keys(backup).sort()).toEqual(['format', 'payload'])
+  expect(Object.keys(backup.payload).sort()).toEqual([
+    'accounts', 'completed', 'includesRequests', 'pending', 'platforms', 'requests', 'schedules', 'settings', 'templates',
+  ])
+  expect(backup.payload.includesRequests).toBe(includeRequests)
+  return { filename, text, backup }
+}
+
+async function previewBackup(page, filename, backup) {
+  await page.getByLabel('选择备份文件').setInputFiles(filename)
+  await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toHaveCount(0)
+  const previewRequest = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/backups/preview')
+  await page.getByRole('button', { name: '预览导入', exact: true }).click()
+  expect((await previewRequest).postDataJSON()).toEqual({ backup })
+  await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toBeVisible()
+  const counts = page.locator('.inline-info').filter({ hasText: '个平台、' })
+  await expect(counts).toContainText(`${backup.payload.platforms.length} 个平台、${backup.payload.accounts.length} 个账号、${backup.payload.requests.length} 个请求`)
+  await expect(counts).toContainText(`${backup.payload.templates.length} 份接口模板`)
+  await expect(counts).toContainText(backup.payload.includesRequests ? '包含完整请求' : '不含请求内容，恢复后需更新 cURL')
+}
+
+async function restoreBackup(page, backup) {
+  await page.getByRole('button', { name: '确认替换并恢复', exact: true }).click()
+  const confirmation = page.locator('.el-message-box')
+  await expect(confirmation).toContainText('替换全部配置，不是合并导入')
+  const importRequest = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/backups/import')
+  await confirmation.getByRole('button', { name: '确认', exact: true }).click()
+  expect((await importRequest).postDataJSON()).toEqual({ backup, replace: true })
+  await expect(page.getByText('配置已恢复，定时保持暂停，请检查后恢复', { exact: true }).last()).toBeVisible()
+  await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toHaveCount(0)
+}
+
 test('manage, import, send, update, schedule, and export through the real web UI', async ({
   page,
   request,
 }, info) => {
+  test.setTimeout(90000)
   const errors = []
   const receivedBefore = (await (await request.get('http://127.0.0.1:18081/received')).json()).length
   page.on('pageerror', (error) => errors.push(error.message))
@@ -13,6 +68,8 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await page.getByPlaceholder('例如：平台 A').fill('回显测试平台')
   await page.getByRole('button', { name: '保存平台', exact: true }).click()
   await expect(page.getByRole('heading', { name: '回显测试平台' })).toBeVisible()
+  const platform = (await (await request.get('/api/platforms')).json()).find((p) => p.name === '回显测试平台')
+  createdPlatforms.add(platform.id)
   await page.getByRole('button', { name: '＋ 添加账号' }).click()
   await page.getByPlaceholder('例如：主账号').fill('测试账号 A')
   await page.getByRole('button', { name: '保存账号', exact: true }).click()
@@ -49,9 +106,8 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await page.locator('.platform-choice').filter({ hasText: '回显测试平台' }).click()
   await page.getByRole('button', { name: '更多 ▾' }).click()
   await page.getByText('更新 cURL', { exact: true }).click()
-  await page
-    .getByRole('textbox', { name: '完整 cURL', exact: true })
-    .fill(`curl 'http://127.0.0.1:18081/check' -H 'Cookie: browser-test=two' --data-raw 'second-body'`)
+  const fullCurl = `curl 'http://127.0.0.1:18081/check' -H 'Cookie: browser-test=two' --data-raw 'second-body'`
+  await page.getByRole('textbox', { name: '完整 cURL', exact: true }).fill(fullCurl)
   await page.getByRole('button', { name: '解析预览' }).click()
   await page.getByRole('button', { name: '保存新版本' }).click()
   await expect(page.locator('.request-row')).toContainText('版本 2')
@@ -68,32 +124,80 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await expect(page.locator('.el-table__body-wrapper')).toContainText('09:00')
   const plans = await (await request.get('/api/schedules')).json()
   expect(plans[0].spec.enabled).toBe(true)
+  await expect.poll(async () => {
+    const logs = await (await request.get('/api/runs')).json()
+    return logs.items.some((item) => ['queued', 'running'].includes(item.status))
+  }).toBe(false)
   await page.getByRole('link', { name: '设置与备份', exact: true }).click()
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出配置', exact: true }).click()
-  const download = await downloadPromise
-  const filename = info.outputPath('export.json')
-  await download.saveAs(filename)
-  const text = await readFile(filename, 'utf8')
-  expect(text).not.toContain('browser-test')
-  expect(text).not.toContain('second-body')
-  expect(text).not.toContain('18081')
-  await page.getByText('包含完整请求（必须密码加密）', { exact: true }).click()
-  await expect(page.getByRole('checkbox', { name: '包含完整请求（必须密码加密）' })).toBeChecked()
-  await page.getByPlaceholder('设置 10～200 字符备份密码').fill('browser-only-backup-password')
-  const encryptedDownload = page.waitForEvent('download')
-  await page.getByRole('button', { name: '导出加密备份', exact: true }).click()
-  const encryptedFilename = info.outputPath('encrypted-backup.json')
-  await (await encryptedDownload).saveAs(encryptedFilename)
-  expect(await readFile(encryptedFilename, 'utf8')).not.toContain('browser-test')
-  await page.getByPlaceholder('加密备份密码，普通配置留空').fill('browser-only-backup-password')
-  await page.getByLabel('选择备份文件').setInputFiles(encryptedFilename)
-  await page.getByRole('button', { name: '预览导入', exact: true }).click()
-  await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toBeVisible()
-  await expect(
-    page.locator('.inline-info').filter({ hasText: '1 个平台、1 个账号、1 个请求' }),
-  ).toContainText('包含完整请求')
+  const includeRequests = page.getByRole('checkbox', { name: '包含完整请求（明文，可能含凭证）' })
+  await expect(includeRequests).not.toBeChecked()
+  await expect(page.locator('input[type="password"]')).toHaveCount(0)
+  await expect(page.getByText('两种模式都可能包含手工填入名称、备注或规则值的敏感信息，不保证隐私安全，导出前请自行检查。', { exact: true })).toBeVisible()
+  const config = await downloadBackup(page, info, false)
+  expect(config.text).not.toContain('browser-test')
+  expect(config.text).not.toContain('second-body')
+  expect(config.text).not.toContain('18081')
+  expect(config.backup.payload.requests).toHaveLength(1)
+  for (const item of config.backup.payload.requests) expect(item).not.toHaveProperty('rawCurl')
+  expect(config.backup.payload.completed).toEqual([])
+  expect(config.backup.payload.pending).toEqual([])
+  await previewBackup(page, config.filename, config.backup)
+
+  await includeRequests.check()
+  await expect(page.getByText('完整备份含明文 Cookie、Token、签名等敏感信息，请仅保存到可信位置，不要公开分享。', { exact: true })).toBeVisible()
+  const full = await downloadBackup(page, info, true)
+  expect(full.backup.payload.requests[0].rawCurl).toBe(fullCurl)
+  expect(full.text).toContain('browser-test=two')
+  expect(full.text).toContain('second-body')
+  expect(full.backup.payload.completed.length).toBeGreaterThan(0)
+  expect(full.backup.payload.pending).toEqual([])
+  await previewBackup(page, full.filename, full.backup)
+
+  // Preview is read-only, and cancelling replacement must not submit an import.
+  let importRequests = 0
+  page.on('request', (r) => { if (new URL(r.url()).pathname === '/api/backups/import') importRequests++ })
+  const savedRequest = (await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests[0]
+  await page.getByRole('button', { name: '确认替换并恢复', exact: true }).click()
+  await page.locator('.el-message-box').getByRole('button', { name: '取消', exact: true }).click()
+  expect(importRequests).toBe(0)
+  expect((await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests[0].currentRevision).toBe(2)
+  const receivedBeforeImport = (await (await request.get('http://127.0.0.1:18081/received')).json()).length
+  await restoreBackup(page, full.backup)
+  expect(importRequests).toBe(1)
+  const restored = await request.get(`/api/requests/${savedRequest.id}/revision`)
+  expect(restored.headers()['cache-control']).toBe('no-store')
+  expect(await restored.json()).toMatchObject({ rawCurl: fullCurl })
+  expect((await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests[0].currentRevision).toBe(1)
+  expect((await (await request.get('/api/settings')).json()).paused).toBe(true)
+  const fullRoundTrip = await (await request.post('/api/backups/export', { data: { includeRequests: true } })).json()
+  expect(fullRoundTrip.payload.completed).toEqual(full.backup.payload.completed)
+  expect(fullRoundTrip.payload.pending).toEqual(full.backup.payload.pending)
+
+  await previewBackup(page, config.filename, config.backup)
+  await restoreBackup(page, config.backup)
+  expect(importRequests).toBe(2)
+  const placeholders = (await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests
+  expect(placeholders[0]).toMatchObject({ id: savedRequest.id, enabled: false, safeHost: '' })
+  expect((await (await request.get('/api/settings')).json()).paused).toBe(true)
+  expect((await (await request.get('http://127.0.0.1:18081/received')).json()).length).toBe(receivedBeforeImport)
+  const browserStorage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }))
+  expect(browserStorage).not.toContain('browser-test')
+  expect(browserStorage).not.toContain('second-body')
   await page.getByRole('link', { name: '平台与账号', exact: true }).click()
+  const placeholderRow = page.locator('.request-row').filter({ hasText: savedRequest.name })
+  await expect(placeholderRow).toContainText('未配置 cURL，需更新')
+  let revisionViews = 0
+  page.on('request', (r) => { if (new URL(r.url()).pathname === `/api/requests/${savedRequest.id}/revision`) revisionViews++ })
+  await placeholderRow.getByRole('button', { name: '更多 ▾', exact: true }).click()
+  await expect(page.getByRole('menuitem', { name: '查看完整请求', exact: true })).toBeDisabled()
+  const updateCurl = page.getByRole('menuitem', { name: '更新 cURL', exact: true })
+  await expect(updateCurl).toBeEnabled()
+  await updateCurl.click()
+  const curlInput = page.getByRole('textbox', { name: '完整 cURL', exact: true })
+  await expect(curlInput).toBeEnabled()
+  await expect(curlInput).toHaveValue('')
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  expect(revisionViews).toBe(0)
   await expect(page.locator('.el-message')).toHaveCount(0)
   await page.screenshot({ path: info.outputPath('platform-desktop.png'), fullPage: true })
   await page.setViewportSize({ width: 390, height: 844 })
@@ -101,6 +205,25 @@ test('manage, import, send, update, schedule, and export through the real web UI
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(391)
   await page.screenshot({ path: info.outputPath('platform-mobile.png'), fullPage: true })
   expect(errors).toEqual([])
+})
+
+test('legacy encrypted and old config files are explicitly unsupported', async ({ page, request }) => {
+  await page.goto('/#/settings')
+  let previewRequests = 0
+  page.on('request', (r) => { if (new URL(r.url()).pathname === '/api/backups/preview') previewRequests++ })
+  for (const format of ['signdesk-backup-v1', 'signdesk-config']) {
+    const backup = { format, ciphertext: 'synthetic-legacy-fixture', payload: {} }
+    await page.getByLabel('选择备份文件').setInputFiles({
+      name: 'legacy-backup.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(backup)),
+    })
+    await expect(page.getByText('不支持此备份格式，仅接受 signdesk-plain-v1 明文 JSON 文件', { exact: true }).last()).toBeVisible()
+    await expect(page.getByRole('button', { name: '预览导入', exact: true })).toBeDisabled()
+    await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toHaveCount(0)
+    const rejected = await request.post('/api/backups/preview', { data: { backup } })
+    expect(rejected.status()).toBe(400)
+    expect((await rejected.json()).message).toMatch(/不支持|格式/)
+  }
+  expect(previewRequests).toBe(0)
 })
 
 test('write boundaries reject cross-site and form requests without adding login', async ({ request }) => {
@@ -135,6 +258,7 @@ test('saved HTTP proxy survives page reload and routes the next execution', asyn
   const platform = await (await request.post('/api/platforms', {
     data: { name: '代理测试平台', note: '', enabled: true, version: 1 },
   })).json()
+  createdPlatforms.add(platform.id)
   const account = await (await request.post(`/api/platforms/${platform.id}/accounts`, {
     data: { alias: '代理测试账号', enabled: true, version: 1 },
   })).json()

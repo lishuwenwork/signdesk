@@ -23,9 +23,8 @@ const responseMessage = computed(() => {
   if (['queued', 'running'].includes(detail.value?.status)) return '请求尚未完成，等待获取响应体。'
   if (['skipped', 'cancelled'].includes(detail.value?.status)) return '本次没有发送请求，无响应体。'
   return {
-    not_recorded: '这条记录没有保存响应体，可能是在响应记录功能启用前生成。',
+    not_recorded: '这条记录没有保存响应体。',
     unavailable: '本次请求未获取到响应体，例如在连接或发送阶段失败、超时。',
-    decryption_failed: '响应体无法解密，请检查原主密钥。',
   }[detail.value?.response?.state] || '没有可查看的响应体。'
 })
 const filter = reactive({ platformId: '', status: '', source: '', page: 1 })
@@ -131,7 +130,7 @@ async function show(row) {
     </div>
   </section>
   <div class="inline-info">
-    响应体加密保存，仅在详情中查看，随执行记录按保留天数清理。每日完成与待确认标记不会随记录清理而丢失。
+    响应体明文保存，仅在详情中查看，随执行记录按保留天数清理。每日完成与待确认标记不会随记录清理而丢失。
   </div>
   <el-drawer v-model="drawer" title="执行记录详情" size="min(760px, 100vw)" destroy-on-close
     ><div v-if="detailLoading" v-loading="true" style="min-height: 120px" aria-label="加载执行详情" />
@@ -156,7 +155,7 @@ async function show(row) {
         <dd>{{ detail.safeSummary || '等待执行' }}</dd>
       </dl>
       <h3>响应体</h3>
-      <p class="muted small">响应可能包含个人信息或凭证；仅在此处解密展示，关闭详情后清除页面内容。</p>
+      <p class="muted small">响应可能包含个人信息或凭证，在服务器明文保存；仅按需展示，关闭详情后清除页面内容。</p>
       <template v-if="detail.response?.body != null">
         <div class="muted small">
           {{ detail.response.contentType || '未提供 Content-Type' }} · {{ detail.response.byteLength }} 字节
@@ -171,8 +170,7 @@ async function show(row) {
         <el-empty v-if="detail.response.byteLength === 0" description="响应体为空（0 字节）" :image-size="50" />
         <pre v-else class="preview-code response-body" data-testid="response-body">{{ detail.response.body }}</pre>
       </template>
-      <el-alert v-else :title="responseMessage" class="space-top" :closable="false"
-        :type="detail.response?.state === 'decryption_failed' ? 'error' : 'info'" />
+      <el-alert v-else :title="responseMessage" class="space-top" :closable="false" type="info" />
       <el-alert
         v-if="detail.status === 'unknown'"
         title="可能已在目标平台完成操作，请先核对结果，再决定是否重新执行"

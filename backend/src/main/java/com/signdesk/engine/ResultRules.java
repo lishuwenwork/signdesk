@@ -8,7 +8,11 @@ import tools.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 
 public record ResultRules(Match success, Match alreadyDone, Match expired, Match failed) {
-    public record Match(String path, Object value, String contains) {}
+    public record Match(String path, Object value, String contains) {
+        @Override public String toString() { return "Match[redacted]"; }
+    }
+
+    @Override public String toString() { return "ResultRules[redacted]"; }
 
     public static ResultRules defaults() {
         return new ResultRules(new Match("code", 0, null), null, null, null);

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.SystemMapper">
+<select id="counts" resultType="com.signdesk.domain.model.DashboardCounts">
+    SELECT (SELECT COUNT(*) FROM platforms) AS platforms,(SELECT COUNT(*) FROM accounts) AS accounts,(SELECT COUNT(*) FROM requests) AS requests,
+      (SELECT COUNT(*) FROM requests r JOIN accounts a ON a.id=r.account_id JOIN platform_schedules s ON s.platform_id=a.platform_id
+       WHERE EXISTS(SELECT 1 FROM daily_completions d WHERE d.request_id=r.id AND d.business_date=CASE WHEN s.timezone='UTC' THEN #{utcDate} ELSE #{localDate} END)) AS completed,
+      (SELECT COUNT(*) FROM requests r JOIN accounts a ON a.id=r.account_id JOIN platform_schedules s ON s.platform_id=a.platform_id
+       WHERE r.auth_paused=1 OR EXISTS(SELECT 1 FROM request_day_states d WHERE d.request_id=r.id AND d.business_date=CASE WHEN s.timezone='UTC' THEN #{utcDate} ELSE #{localDate} END AND d.unknown_pending=1)) AS needs_attention
+  </select>
+</mapper>

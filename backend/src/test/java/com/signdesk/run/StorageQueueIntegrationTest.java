@@ -2,40 +2,42 @@ package com.signdesk.run;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import com.signdesk.backup.BackupService;
-import com.signdesk.common.ApiException;
-import com.signdesk.common.Json;
-import com.signdesk.engine.CurlParser;
-import com.signdesk.engine.ResultRules;
-import com.signdesk.engine.ProxySettings;
-import com.signdesk.platform.CatalogService;
-import com.signdesk.platform.PlatformMapper;
-import com.signdesk.schedule.ScheduleService;
-import com.signdesk.schedule.ScheduleScanner;
-import com.signdesk.schedule.ScheduleSpec;
+import com.signdesk.common.*;
+import com.signdesk.domain.*;
+import com.signdesk.domain.bo.*;
+import com.signdesk.domain.model.SchedulePlan;
+import com.signdesk.domain.vo.*;
+import com.signdesk.engine.*;
+import com.signdesk.mapper.*;
+import com.signdesk.scheduler.*;
+import com.signdesk.service.*;
 import com.signdesk.storage.*;
 import com.sun.net.httpserver.HttpServer;
 
+import org.apache.ibatis.logging.nologging.NoLoggingImpl;
 import org.junit.jupiter.api.*;
+import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.transaction.PlatformTransactionManager;
 
+import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
-import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.time.Clock;
-import java.time.Instant;
+import java.nio.charset.*;
+import java.nio.file.*;
+import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Import(StorageQueueIntegrationTest.TimeConfiguration.class)
 class StorageQueueIntegrationTest {
     static final Path DIR;
 
@@ -50,25 +52,63 @@ class StorageQueueIntegrationTest {
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("signdesk.data-dir", () -> DIR.resolve("data").toString());
-        registry.add("signdesk.key-file", () -> DIR.resolve("secrets/master.key").toString());
         registry.add("signdesk.allowed-hosts", () -> "127.0.0.1");
     }
 
-    @Autowired CatalogService catalog;
-    @Autowired RunService runs;
-    @Autowired Db db;
-    @Autowired SettingsService settings;
-    @Autowired ScheduleService schedules;
-    @Autowired BackupService backups;
-    @Autowired SecretStore secrets;
-    @Autowired RunResponseStore responses;
+    @Autowired IPlatformService platforms;
+    @Autowired IAccountService accounts;
+    @Autowired IRequestService requests;
+    @Autowired IRequestTemplateService templates;
+    @Autowired IRunService runs;
+    @Autowired IRunRecordService records;
+    @Autowired ISettingsService settings;
+    @Autowired IScheduleService schedules;
+    @Autowired IBackupService backups;
+    @Autowired JdbcTemplate jdbc;
     @Autowired ScheduleScanner scanner;
     @Autowired InstanceLock lock;
-    @Autowired DatabaseMigrator migrator;
     @Autowired PlatformMapper mapper;
-    @Autowired CurlParser parser;
+    @Autowired RunResponseMapper responseMapper;
+    @Autowired SqlSessionTemplate sqlSession;
     @Autowired Clock clock;
-    @Autowired PlatformTransactionManager transactions;
+    @Autowired RunCoordinator coordinator;
+    @Autowired RunDispatcher dispatcher;
+    @Autowired MutableClock testClock;
+    @Autowired ISystemService system;
+
+    @TestConfiguration
+    static class TimeConfiguration {
+        @Bean
+        @Primary
+        MutableClock testClock() {
+            return new MutableClock();
+        }
+    }
+
+    static final class MutableClock extends Clock {
+        private final AtomicReference<Instant> now =
+                new AtomicReference<>(Instant.parse("2026-10-09T00:00:00Z"));
+
+        void set(Instant value) {
+            now.set(value);
+        }
+
+        @Override
+        public Instant instant() {
+            return now.get();
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return Clock.fixed(instant(), zone);
+        }
+    }
+
     HttpServer server;
     String url;
     AtomicInteger hits = new AtomicInteger();
@@ -140,57 +180,89 @@ class StorageQueueIntegrationTest {
                     }
                     e.close();
                 });
-        server.createContext("/response", e -> {
-            byte[] reply = responseText(hits.incrementAndGet()).getBytes(StandardCharsets.UTF_8);
-            e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
-            e.sendResponseHeaders(200, reply.length);
-            e.getResponseBody().write(reply);
-            e.close();
-        });
-        server.createContext("/response-error", e -> {
-            hits.incrementAndGet();
-            byte[] reply = "upstream-response-only-secret".getBytes(StandardCharsets.UTF_8);
-            e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
-            e.sendResponseHeaders(500, reply.length);
-            e.getResponseBody().write(reply);
-            e.close();
-        });
-        server.createContext("/response-gbk", e -> {
-            hits.incrementAndGet();
-            byte[] reply = "响应体中文".getBytes(Charset.forName("GBK"));
-            e.getResponseHeaders().add("Content-Type", "text/plain; charset=GBK");
-            e.sendResponseHeaders(200, reply.length);
-            e.getResponseBody().write(reply);
-            e.close();
-        });
-        server.createContext("/response-binary", e -> {
-            hits.incrementAndGet();
-            byte[] reply = {0, 1, 2, (byte) 255};
-            e.getResponseHeaders().add("Content-Type", "application/octet-stream");
-            e.sendResponseHeaders(200, reply.length);
-            e.getResponseBody().write(reply);
-            e.close();
-        });
-        server.createContext("/response-partial", e -> {
-            hits.incrementAndGet();
-            try {
-                e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
-                e.sendResponseHeaders(200, 0);
-                e.getResponseBody().write("partial-response-only-secret".getBytes(StandardCharsets.UTF_8));
-                e.getResponseBody().flush();
-                Thread.sleep(1500);
-            } catch (Exception ignored) {
-            } finally { e.close(); }
-        });
-        server.createContext("/response-large", e -> {
-            hits.incrementAndGet();
-            byte[] reply = new byte[1048577];
-            Arrays.fill(reply, (byte) 'z');
-            e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
-            e.sendResponseHeaders(200, reply.length);
-            try { e.getResponseBody().write(reply); } catch (Exception ignored) {}
-            e.close();
-        });
+        server.createContext(
+                "/response",
+                e -> {
+                    byte[] reply =
+                            responseText(hits.incrementAndGet()).getBytes(StandardCharsets.UTF_8);
+                    e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+                    e.sendResponseHeaders(200, reply.length);
+                    e.getResponseBody().write(reply);
+                    e.close();
+                });
+        server.createContext(
+                "/response-error",
+                e -> {
+                    hits.incrementAndGet();
+                    byte[] reply = "upstream-response-only-secret".getBytes(StandardCharsets.UTF_8);
+                    e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                    e.sendResponseHeaders(500, reply.length);
+                    e.getResponseBody().write(reply);
+                    e.close();
+                });
+        server.createContext(
+                "/response-gbk",
+                e -> {
+                    hits.incrementAndGet();
+                    byte[] reply = "响应体中文".getBytes(Charset.forName("GBK"));
+                    e.getResponseHeaders().add("Content-Type", "text/plain; charset=GBK");
+                    e.sendResponseHeaders(200, reply.length);
+                    e.getResponseBody().write(reply);
+                    e.close();
+                });
+        server.createContext(
+                "/response-binary",
+                e -> {
+                    hits.incrementAndGet();
+                    byte[] reply = {0, 1, 2, (byte) 255};
+                    e.getResponseHeaders().add("Content-Type", "application/octet-stream");
+                    e.sendResponseHeaders(200, reply.length);
+                    e.getResponseBody().write(reply);
+                    e.close();
+                });
+        server.createContext(
+                "/response-partial",
+                e -> {
+                    hits.incrementAndGet();
+                    try {
+                        e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                        e.sendResponseHeaders(200, 0);
+                        e.getResponseBody()
+                                .write(
+                                        "partial-response-only-secret"
+                                                .getBytes(StandardCharsets.UTF_8));
+                        e.getResponseBody().flush();
+                        Thread.sleep(1500);
+                    } catch (Exception ignored) {
+                    } finally {
+                        e.close();
+                    }
+                });
+        server.createContext(
+                "/response-large",
+                e -> {
+                    hits.incrementAndGet();
+                    byte[] reply = new byte[1048577];
+                    Arrays.fill(reply, (byte) 'z');
+                    e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                    e.sendResponseHeaders(200, reply.length);
+                    try {
+                        e.getResponseBody().write(reply);
+                    } catch (Exception ignored) {
+                    }
+                    e.close();
+                });
+        server.createContext(
+                "/response-exact",
+                e -> {
+                    hits.incrementAndGet();
+                    byte[] reply = new byte[1048576];
+                    Arrays.fill(reply, (byte) 'e');
+                    e.getResponseHeaders().add("Content-Type", "text/plain; charset=UTF-8");
+                    e.sendResponseHeaders(200, reply.length);
+                    e.getResponseBody().write(reply);
+                    e.close();
+                });
         server.start();
         url = "http://127.0.0.1:" + server.getAddress().getPort();
     }
@@ -200,25 +272,70 @@ class StorageQueueIntegrationTest {
         server.stop(0);
     }
 
+    String platform, account, request;
+
     @BeforeEach
     void reset() throws Exception {
-        await(() -> runs.active().isEmpty());
-        db.update("DELETE FROM platforms");
-        var s = settings.get();
-        settings.save(new SettingsService.Settings(true, 2, 20, 30, s.version()));
+        await(() -> records.active().isEmpty());
+        // Active database rows can complete before the platform worker releases its in-process
+        // slot.
+        for (int i = 0; i < 100; i++) {
+            try {
+                runs.beginMaintenance();
+                break;
+            } catch (ApiException e) {
+                if (i == 99) throw e;
+                Thread.sleep(10);
+            }
+        }
+        try {
+            jdbc.update("DELETE FROM platforms");
+        } finally {
+            runs.endMaintenance();
+        }
+        testClock.set(Instant.parse("2026-10-09T00:00:00Z"));
+        var s = settings.query();
+        settings.save(new SettingsBo(true, 2, 20, 30, s.version(), ProxySettings.system()));
         hits.set(0);
         bodies.clear();
         entered = new CountDownLatch(1);
         release = new CountDownLatch(1);
     }
 
-    String platform, account, request;
+    String addPlatform(String name, String note, boolean enabled) {
+        var b = new PlatformBo();
+        b.setName(name);
+        b.setNote(note);
+        b.setEnabled(enabled);
+        return platforms.insert(b);
+    }
+
+    void updatePlatform(String id, String name, String note, boolean enabled, int version) {
+        var b = new PlatformBo();
+        b.setName(name);
+        b.setNote(note);
+        b.setEnabled(enabled);
+        b.setVersion(version);
+        platforms.update(id, b);
+    }
+
+    String addAccount(String p, String alias, boolean enabled) {
+        return accounts.insert(p, new NewAccountBo(alias, enabled));
+    }
+
+    String addRequest(String a, String name, String curl, ResultRules rules, boolean enabled) {
+        return requests.insert(a, new NewRequestBo(name, curl, enabled, rules));
+    }
+
+    String addTemplate(String p, String name, ResultRules rules) {
+        return templates.insert(p, new NewRequestTemplateBo(name, rules));
+    }
 
     void setup(String endpoint) {
-        platform = catalog.addPlatform("测试平台", "", true);
-        account = catalog.addAccount(platform, "账号 A", true);
+        platform = addPlatform("测试平台", "", true);
+        account = addAccount(platform, "账号 A", true);
         request =
-                catalog.addRequest(
+                addRequest(
                         account,
                         "每日签到",
                         "curl '"
@@ -228,10 +345,10 @@ class StorageQueueIntegrationTest {
                                 + " 'first-body'",
                         ResultRules.defaults(),
                         true);
-        var s = schedules.get(platform);
+        var s = schedules.queryById(platform);
         schedules.save(
                 platform,
-                new ScheduleSpec(
+                new ScheduleBo(
                         false,
                         "daily",
                         s.weekdays(),
@@ -244,28 +361,42 @@ class StorageQueueIntegrationTest {
     }
 
     String manual(boolean force) {
-        return runs.manual(
-                        new RunService.ManualRun(
-                                "request", request, force, UUID.randomUUID().toString()))
+        return runs.manual(new ManualRunBo("request", request, force, UUID.randomUUID().toString()))
                 .getFirst();
     }
 
     void complete(String batch) throws Exception {
-        await(() -> Db.text(runs.batch(batch), "status").equals("completed"));
+        await(() -> records.queryBatch(batch).getStatus().equals("completed"));
     }
 
     String status(String batch) {
-        return Db.text(
-                ((List<Map<String, Object>>) runs.batch(batch).get("items")).getFirst(), "status");
-    }
-
-    static String responseText(int attempt) {
-        return "{\n  \"code\":0,\n  \"attempt\":" + attempt
-                + ",\n  \"message\":\"响应体 response-only-fixture-secret\"\n}";
+        return records.queryBatch(batch).getItems().getFirst().getStatus();
     }
 
     String itemId(String batch) {
-        return Db.text(((List<Map<String, Object>>) runs.batch(batch).get("items")).getFirst(), "id");
+        return records.queryBatch(batch).getItems().getFirst().getId();
+    }
+
+    ResponseDetailVo response(String batch) {
+        return records.queryResponse(itemId(batch));
+    }
+
+    long count(String sql, Object... args) {
+        return jdbc.queryForObject(sql, Long.class, args);
+    }
+
+    int integer(String sql, Object... args) {
+        return jdbc.queryForObject(sql, Integer.class, args);
+    }
+
+    String text(String sql, Object... args) {
+        return jdbc.queryForObject(sql, String.class, args);
+    }
+
+    static String responseText(int attempt) {
+        return "{\n  \"code\":0,\n  \"attempt\":"
+                + attempt
+                + ",\n  \"message\":\"响应体 response-only-fixture-secret\"\n}";
     }
 
     static void await(java.util.function.BooleanSupplier condition) throws Exception {
@@ -274,29 +405,98 @@ class StorageQueueIntegrationTest {
         assertTrue(condition.getAsBoolean(), "operation did not finish");
     }
 
+    BackupFile config(boolean include) {
+        return backups.export(new BackupExportBo(include));
+    }
+
+    BackupFile file(Object value) {
+        return BackupCodec.read(
+                        new ByteArrayInputStream(
+                                Json.write(
+                                                new BackupPreviewBo(
+                                                        Json.read(
+                                                                Json.write(value),
+                                                                BackupFile.class)))
+                                        .getBytes(StandardCharsets.UTF_8)),
+                        BackupPreviewBo.class)
+                .backup();
+    }
+
+    BackupFile decodeMap(Map<String, Object> value) {
+        return BackupCodec.read(
+                        new ByteArrayInputStream(
+                                Json.write(Map.of("backup", value))
+                                        .getBytes(StandardCharsets.UTF_8)),
+                        BackupPreviewBo.class)
+                .backup();
+    }
+
+    void restore(BackupFile b) {
+        backups.restore(new BackupImportBo(b, true));
+    }
+
     @Test
-    void responseBodiesAreEncryptedAndRemainIndependentForEveryExecution() throws Exception {
+    void mpPrivateEntitySupportsStringIdsLambdaQueriesAndOptimisticEdits() {
+        String id = addPlatform("MP基础测试", "initial", true);
+        var first = mapper.selectById(id);
+        var stale = mapper.selectById(id);
+        assertTrue(id.matches("[1-9][0-9]*"));
+        assertEquals(id, first.getId());
+        assertEquals("MP基础测试", platforms.queryList().getFirst().getName());
+        first.setNote("updated");
+        assertEquals(1, mapper.updateById(first));
+        assertEquals(2, first.getVersion());
+        stale.setNote("must-not-overwrite");
+        assertEquals(0, mapper.updateById(stale));
+        assertEquals("updated", mapper.selectById(id).getNote());
+        updatePlatform(id, "MP基础测试", "service-edit", true, 2);
+        assertEquals(3, mapper.selectById(id).getVersion());
+        assertEquals(
+                409,
+                assertThrows(ApiException.class, () -> updatePlatform(id, "stale", "", true, 2))
+                        .status());
+    }
+
+    @Test
+    void mapperXmlIsDiscoveredAndSqlParameterLoggingStaysOff() {
+        String id = addPlatform("XML测试", "", true);
+        assertEquals(NoLoggingImpl.class, sqlSession.getConfiguration().getLogImpl());
+        Integer version =
+                sqlSession.selectOne("com.signdesk.mapper.PlatformMapper.foundationVersion", id);
+        assertEquals(1, version);
+        assertNull(
+                sqlSession.selectOne(
+                        "com.signdesk.mapper.PlatformMapper.foundationVersion", "' OR 1=1 --"));
+    }
+
+    @Test
+    void responseBodiesArePlainAndRemainIndependentForEveryExecution() throws Exception {
         setup("/response");
         String first = manual(false);
         complete(first);
-        var firstBody = responses.detail(itemId(first));
+        var firstBody = response(first);
         assertEquals("complete", firstBody.state());
         assertEquals(responseText(1), firstBody.body());
         assertEquals("text", firstBody.encoding());
-        assertEquals(responseText(1).getBytes(StandardCharsets.UTF_8).length, firstBody.byteLength());
+        assertEquals(
+                responseText(1).getBytes(StandardCharsets.UTF_8).length, firstBody.byteLength());
         String second = manual(true);
         complete(second);
-        assertEquals(responseText(2), responses.detail(itemId(second)).body());
-        assertEquals(firstBody, new RunResponseStore(db, secrets).detail(itemId(first)));
-        String ciphertext = Db.text(db.one("SELECT ciphertext FROM run_responses WHERE run_id=?", itemId(first)), "ciphertext");
-        assertFalse(ciphertext.contains("response-only-fixture-secret"));
-        assertThrows(IllegalStateException.class, () -> secrets.decrypt(ciphertext, "run-response:wrong-id"));
-        assertFalse(Json.write(runs.logs(null, null, null, 1, 20)).contains("response-only-fixture-secret"));
-        assertFalse(Json.write(runs.batch(first)).contains("response-only-fixture-secret"));
-        assertFalse(Json.write(backups.export(new BackupService.Request(null, false, null, false)))
-                .contains("response-only-fixture-secret"));
-        assertEquals(firstBody, runs.detail(itemId(first)).get("response"));
-        assertEquals(2, db.count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(responseText(2), response(second).body());
+        assertEquals(firstBody, response(first));
+        assertArrayEquals(
+                responseText(1).getBytes(StandardCharsets.UTF_8),
+                jdbc.queryForObject(
+                        "SELECT body_bytes FROM run_responses WHERE run_id=?",
+                        byte[].class,
+                        itemId(first)));
+        assertFalse(
+                Json.write(records.queryPageList(null, null, null, 1, 20))
+                        .contains("response-only-fixture-secret"));
+        assertFalse(Json.write(records.queryBatch(first)).contains("response-only-fixture-secret"));
+        assertFalse(Json.write(config(false)).contains("response-only-fixture-secret"));
+        assertEquals(firstBody, records.queryById(itemId(first)).getResponse());
+        assertEquals(2, count("SELECT COUNT(*) FROM run_responses"));
         assertEquals(2, hits.get());
     }
 
@@ -306,104 +506,116 @@ class StorageQueueIntegrationTest {
         String failed = manual(false);
         complete(failed);
         assertEquals("unknown", status(failed));
-        assertEquals("complete", responses.detail(itemId(failed)).state());
-        assertEquals("upstream-response-only-secret", responses.detail(itemId(failed)).body());
+        assertEquals("complete", response(failed).state());
+        assertEquals("upstream-response-only-secret", response(failed).body());
         String skipped = manual(false);
         complete(skipped);
         assertEquals("skipped", status(skipped));
-        assertEquals("not_recorded", responses.detail(itemId(skipped)).state());
-        assertEquals(1, hits.get(), "an uncertain result must not be retried automatically");
-        catalog.replaceRequest(request, "curl '" + url + "/expired'", 1);
+        assertEquals("not_recorded", response(skipped).state());
+        assertEquals(1, hits.get());
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/expired'", 1));
         String empty = manual(true);
         complete(empty);
         assertEquals("expired", status(empty));
-        assertEquals("complete", responses.detail(itemId(empty)).state());
-        assertEquals("", responses.detail(itemId(empty)).body());
-        assertEquals(0, responses.detail(itemId(empty)).byteLength());
+        assertEquals("complete", response(empty).state());
+        assertEquals("", response(empty).body());
+        assertEquals(0, response(empty).byteLength());
         int port;
-        try (var socket = new java.net.ServerSocket(0)) { port = socket.getLocalPort(); }
-        int version = Db.integer(db.one("SELECT version FROM requests WHERE id=?", request), "version");
-        catalog.replaceRequest(request, "curl 'http://127.0.0.1:" + port + "/unavailable' --max-time 1", version);
+        try (var socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        int version = integer("SELECT version FROM requests WHERE id=?", request);
+        requests.replaceCurl(
+                request,
+                new CurlBo(
+                        "curl 'http://127.0.0.1:" + port + "/unavailable' --max-time 1", version));
         String unavailable = manual(true);
         complete(unavailable);
         assertEquals("unknown", status(unavailable));
-        assertEquals("unavailable", responses.detail(itemId(unavailable)).state());
-        assertNull(responses.detail(itemId(unavailable)).body());
+        assertEquals("unavailable", response(unavailable).state());
+        assertNull(response(unavailable).body());
         assertEquals(2, hits.get());
     }
 
     @Test
     void partialAndOversizedBodiesArePersistedWithExplicitIncompleteStates() throws Exception {
         setup("/response-partial");
-        catalog.replaceRequest(request, "curl '" + url + "/response-partial' --max-time 1", 1);
+        requests.replaceCurl(
+                request, new CurlBo("curl '" + url + "/response-partial' --max-time 1", 1));
         String partial = manual(false);
         complete(partial);
         assertEquals("unknown", status(partial));
-        assertEquals("partial", responses.detail(itemId(partial)).state());
-        assertEquals("partial-response-only-secret", responses.detail(itemId(partial)).body());
-        catalog.replaceRequest(request, "curl '" + url + "/response-large'", 2);
+        assertEquals("partial", response(partial).state());
+        assertEquals("partial-response-only-secret", response(partial).body());
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/response-large'", 2));
         String large = manual(true);
         complete(large);
-        var detail = responses.detail(itemId(large));
         assertEquals("unknown", status(large));
-        assertEquals("truncated", detail.state());
-        assertEquals(1048576, detail.byteLength());
-        assertEquals("z".repeat(1048576), detail.body());
-        assertEquals(1048576, detail.limitBytes());
+        assertEquals("truncated", response(large).state());
+        assertEquals(1048576, response(large).byteLength());
+        assertEquals("z".repeat(1048576), response(large).body());
+        assertEquals(1048576, response(large).limitBytes());
         assertEquals(2, hits.get());
     }
 
     @Test
     void responseDetailsDecodeDeclaredCharsetsAndPreserveBinaryBytes() throws Exception {
         setup("/response-gbk");
-        String text = manual(false);
-        complete(text);
-        assertEquals("响应体中文", responses.detail(itemId(text)).body());
-        assertEquals("text", responses.detail(itemId(text)).encoding());
-        assertEquals("GBK", responses.detail(itemId(text)).charset().toUpperCase(Locale.ROOT));
-        catalog.replaceRequest(request, "curl '" + url + "/response-binary'", 1);
+        String first = manual(false);
+        complete(first);
+        assertEquals("响应体中文", response(first).body());
+        assertEquals("text", response(first).encoding());
+        assertEquals("GBK", response(first).charset().toUpperCase(Locale.ROOT));
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/response-binary'", 1));
         String binary = manual(true);
         complete(binary);
-        var detail = responses.detail(itemId(binary));
-        assertEquals("base64", detail.encoding());
-        assertArrayEquals(new byte[] {0, 1, 2, (byte) 255}, Base64.getDecoder().decode(detail.body()));
-        db.update("DELETE FROM run_responses WHERE run_id=?", itemId(binary));
-        assertEquals("not_recorded", responses.detail(itemId(binary)).state());
-        assertNull(responses.detail(itemId(binary)).body());
+        assertEquals("base64", response(binary).encoding());
+        assertArrayEquals(
+                new byte[] {0, 1, 2, (byte) 255},
+                Base64.getDecoder().decode(response(binary).body()));
+        jdbc.update("DELETE FROM run_responses WHERE run_id=?", itemId(binary));
+        assertEquals("not_recorded", response(binary).state());
+        assertNull(response(binary).body());
     }
 
     @Test
-    void responseCiphertextIsBoundToItsRunAndPreventsReplacementOfMissingKeys() throws Exception {
+    void plainResponseBytesAreDefensivelyCopiedAndNeedNoKey() throws Exception {
         setup("/response");
         String first = manual(false);
         complete(first);
         String second = manual(true);
         complete(second);
-        String ciphertext = Db.text(db.one("SELECT ciphertext FROM run_responses WHERE run_id=?", itemId(second)), "ciphertext");
-        db.update("UPDATE run_responses SET ciphertext=? WHERE run_id=?", ciphertext, itemId(first));
-        assertEquals("decryption_failed", responses.detail(itemId(first)).state());
-        assertNull(responses.detail(itemId(first)).body());
-        assertEquals("complete", responses.detail(itemId(second)).state());
-        var wrongKey = new SecretStore(migrator, lock, Base64.getEncoder().encodeToString(new byte[32]), "ignored");
-        assertEquals("decryption_failed", new RunResponseStore(db, wrongKey).detail(itemId(second)).state());
-        db.update("DELETE FROM request_revisions");
-        Path missing = DIR.resolve("responses-missing-key/master.key");
-        assertThrows(IllegalStateException.class, () -> new SecretStore(migrator, lock, "", missing.toString()));
-        assertFalse(Files.exists(missing));
+        var stored = responseMapper.selectById(itemId(first));
+        byte[] bytes = stored.getBodyBytes();
+        bytes[0] = 'x';
+        assertEquals('{', stored.getBodyBytes()[0]);
+        byte[] input = {1, 2};
+        stored.setBodyBytes(input);
+        input[0] = 9;
+        assertEquals(1, stored.getBodyBytes()[0]);
+        assertEquals(responseText(1), response(first).body());
+        assertEquals(responseText(2), response(second).body());
+        try (var files = Files.walk(DIR)) {
+            assertTrue(files.noneMatch(f -> f.getFileName().toString().endsWith(".key")));
+        }
     }
 
     @Test
-    void retentionRemovesEncryptedBodiesButKeepsIndependentDayMarkers() throws Exception {
+    void retentionRemovesPlainBodiesButKeepsIndependentDayMarkers() throws Exception {
         setup("/response");
         String batch = manual(false);
         complete(batch);
-        db.update("UPDATE run_items SET finished_at=? WHERE id=?",
-                clock.instant().minusSeconds(31 * 86400L).toString(), itemId(batch));
+        jdbc.update(
+                "UPDATE run_items SET finished_at=? WHERE id=?",
+                clock.instant().minusSeconds(31 * 86400L).toString(),
+                itemId(batch));
         scanner.retention();
-        assertEquals(0, db.count("SELECT COUNT(*) FROM run_items"));
-        assertEquals(0, db.count("SELECT COUNT(*) FROM run_responses"));
-        assertEquals(1, db.count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
-        assertEquals(1, db.count("SELECT COUNT(*) FROM request_day_states WHERE request_id=?", request));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_items"));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(
+                1, count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
+        assertEquals(
+                1, count("SELECT COUNT(*) FROM request_day_states WHERE request_id=?", request));
         String skipped = manual(false);
         complete(skipped);
         assertEquals("skipped", status(skipped));
@@ -412,65 +624,100 @@ class StorageQueueIntegrationTest {
 
     @Test
     void templatesArePlatformScopedValidatedVersionedAndCascadeWithTheirPlatform() {
-        platform = catalog.addPlatform("模板平台", "", true);
-        String other = catalog.addPlatform("另一个平台", "", true);
+        platform = addPlatform("模板平台", "", true);
+        String other = addPlatform("另一个平台", "", true);
         var rules = new ResultRules(null, new ResultRules.Match("done", true, null), null, null);
-        String id = catalog.addTemplate(platform, "  查询积分  ", rules);
+        String id = addTemplate(platform, "  查询积分  ", rules);
         assertTrue(id.matches("[1-9][0-9]{0,18}"));
         assertTrue(Long.parseLong(id) > 0);
-        assertEquals(List.of(), catalog.templates(other));
-        var stored = catalog.templates(platform).getFirst();
-        assertEquals("查询积分", stored.get("name"));
-        assertEquals(rules, stored.get("rules"));
-        assertFalse(stored.containsKey("rulesJson"));
-        assertEquals(1, Db.integer(stored, "version"));
-        catalog.updateTemplate(platform, id, "查询结果", ResultRules.defaults(), 1);
-        assertEquals(2, Db.integer(catalog.templates(platform).getFirst(), "version"));
-        assertEquals(409, assertThrows(ApiException.class,
-                () -> catalog.updateTemplate(platform, id, "冲突", rules, 1)).status());
-        assertEquals(404, assertThrows(ApiException.class,
-                () -> catalog.updateTemplate(other, id, "错误平台", rules, 2)).status());
-        assertEquals(404, assertThrows(ApiException.class,
-                () -> catalog.deleteTemplate(other, id)).status());
-        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, " ", rules));
-        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, "名".repeat(61), rules));
+        assertEquals(List.of(), templates.queryList(other));
+        var stored = templates.queryList(platform).getFirst();
+        assertEquals("查询积分", stored.getName());
+        assertEquals(rules, stored.getRules());
+        assertEquals(1, stored.getVersion());
+        assertFalse(Json.write(stored).contains("rulesJson"));
+        templates.update(platform, id, new RequestTemplateBo("查询结果", ResultRules.defaults(), 1));
+        assertEquals(2, templates.queryList(platform).getFirst().getVersion());
+        assertEquals(
+                409,
+                assertThrows(
+                                ApiException.class,
+                                () ->
+                                        templates.update(
+                                                platform,
+                                                id,
+                                                new RequestTemplateBo("冲突", rules, 1)))
+                        .status());
+        assertEquals(
+                404,
+                assertThrows(
+                                ApiException.class,
+                                () ->
+                                        templates.update(
+                                                other, id, new RequestTemplateBo("错误平台", rules, 2)))
+                        .status());
+        assertEquals(
+                404, assertThrows(ApiException.class, () -> templates.delete(other, id)).status());
+        assertThrows(ApiException.class, () -> addTemplate(platform, " ", rules));
+        assertThrows(ApiException.class, () -> addTemplate(platform, "名".repeat(61), rules));
         var invalid = new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null);
-        assertThrows(ApiException.class, () -> catalog.addTemplate(platform, "错误规则", invalid));
-        assertThrows(ApiException.class, () -> catalog.updateTemplate(platform, id, "错误规则", invalid, 2));
-        assertEquals("查询结果", catalog.templates(platform).getFirst().get("name"));
-        String second = catalog.addTemplate(platform, "签到", null);
-        catalog.deleteTemplate(platform, second);
-        assertEquals(1, catalog.templates(platform).size());
-        catalog.delete("platforms", platform);
-        assertEquals(0, db.count("SELECT COUNT(*) FROM request_templates"));
+        assertThrows(ApiException.class, () -> addTemplate(platform, "错误规则", invalid));
+        assertThrows(
+                ApiException.class,
+                () -> templates.update(platform, id, new RequestTemplateBo("错误规则", invalid, 2)));
+        assertEquals("查询结果", templates.queryList(platform).getFirst().getName());
+        String second = addTemplate(platform, "签到", null);
+        templates.delete(platform, second);
+        assertEquals(1, templates.queryList(platform).size());
+        platforms.delete(platform);
+        assertEquals(0, count("SELECT COUNT(*) FROM request_templates"));
     }
 
     @Test
     void templateChangesDoNotChangeRequestsOrQueuedRuleSnapshots() throws Exception {
         setup("/hold");
-        String template = catalog.addTemplate(platform, "领取奖励", ResultRules.defaults());
-        var copied = (ResultRules) catalog.templates(platform).getFirst().get("rules");
-        String reward = catalog.addRequest(account, "领取奖励",
-                "curl '" + url + "/ok' --data-raw 'template-body'", copied, true);
-        String batch = runs.manual(new RunService.ManualRun(
-                "platform", platform, false, "template-snapshot-fixture")).getFirst();
+        String template = addTemplate(platform, "领取奖励", ResultRules.defaults());
+        var copied = templates.queryList(platform).getFirst().getRules();
+        String reward =
+                addRequest(
+                        account,
+                        "领取奖励",
+                        "curl '" + url + "/ok' --data-raw 'template-body'",
+                        copied,
+                        true);
+        String batch =
+                runs.manual(
+                                new ManualRunBo(
+                                        "platform", platform, false, "template-snapshot-fixture"))
+                        .getFirst();
         assertTrue(entered.await(5, TimeUnit.SECONDS));
         try {
-            var changed = new ResultRules(new ResultRules.Match("code", 99, null), null, null, null);
-            catalog.updateTemplate(platform, template, "新规则", changed, 1);
-            catalog.deleteTemplate(platform, template);
-            assertEquals(copied, Json.read(Db.text(db.one(
-                    "SELECT rules_json FROM requests WHERE id=?", reward), "rulesJson"), ResultRules.class));
-            assertEquals(copied, Json.read(Db.text(db.one(
-                    "SELECT rules_json FROM run_items WHERE request_id=? AND batch_id=?", reward, batch),
-                    "rulesJson"), ResultRules.class));
-            catalog.updateRequest(reward, "领取奖励", true, changed, 1);
+            var changed =
+                    new ResultRules(new ResultRules.Match("code", 99, null), null, null, null);
+            templates.update(platform, template, new RequestTemplateBo("新规则", changed, 1));
+            templates.delete(platform, template);
+            assertEquals(
+                    copied,
+                    Json.read(
+                            text("SELECT rules_json FROM requests WHERE id=?", reward),
+                            ResultRules.class));
+            assertEquals(
+                    copied,
+                    Json.read(
+                            text(
+                                    "SELECT rules_json FROM run_items WHERE request_id=? AND"
+                                            + " batch_id=?",
+                                    reward,
+                                    batch),
+                            ResultRules.class));
+            requests.update(reward, new RequestBo("领取奖励", true, changed, 1));
         } finally {
             release.countDown();
         }
         complete(batch);
-        var items = (List<Map<String, Object>>) runs.batch(batch).get("items");
-        assertEquals(List.of("success", "success"), items.stream().map(i -> Db.text(i, "status")).toList());
+        assertEquals(
+                List.of("success", "success"),
+                records.queryBatch(batch).getItems().stream().map(BatchItemVo::getStatus).toList());
         assertEquals(List.of("template-body"), bodies);
         assertEquals(2, hits.get());
     }
@@ -480,26 +727,23 @@ class StorageQueueIntegrationTest {
         setup("/ok");
         String batch = manual(false);
         complete(batch);
-        var batchRow = runs.batch(batch);
-        var item = ((List<Map<String, Object>>) batchRow.get("items")).getFirst();
-        String itemId = Db.text(item, "id");
-        var ids = List.of(platform, account, request, batch, itemId);
+        var batchRow = records.queryBatch(batch);
+        var item = batchRow.getItems().getFirst();
+        var ids = List.of(platform, account, request, batch, item.getId());
         assertEquals(ids.size(), new HashSet<>(ids).size());
         for (String id : ids) {
-            assertTrue(id.matches("[1-9][0-9]{0,18}"), "ID must be a decimal snowflake string");
+            assertTrue(id.matches("[1-9][0-9]{0,18}"));
             assertTrue(Long.parseLong(id) > 9_007_199_254_740_991L);
         }
-        assertEquals(platform, mapper.selectById(platform).id);
-        assertEquals(platform, db.one("SELECT platform_id FROM accounts WHERE id=?", account).get("platformId"));
-        assertEquals(account, db.one("SELECT account_id FROM requests WHERE id=?", request).get("accountId"));
-        assertEquals(platform, batchRow.get("platformId"));
-        assertEquals(batch, db.one("SELECT batch_id FROM run_items WHERE id=?", itemId).get("batchId"));
-        assertEquals(request, item.get("requestId"));
+        assertEquals(platform, mapper.selectById(platform).getId());
+        assertEquals(platform, text("SELECT platform_id FROM accounts WHERE id=?", account));
+        assertEquals(account, text("SELECT account_id FROM requests WHERE id=?", request));
+        assertEquals(platform, batchRow.getPlatformId());
+        assertEquals(batch, text("SELECT batch_id FROM run_items WHERE id=?", item.getId()));
+        assertEquals(request, item.getRequestId());
         var json = Json.tree(Json.write(batchRow));
         assertTrue(json.path("id").isString());
-        assertEquals(batch, json.path("id").asString());
         assertTrue(json.path("items").get(0).path("id").isString());
-        assertEquals(itemId, json.path("items").get(0).path("id").asString());
         assertEquals("success", status(batch));
         assertEquals(1, hits.get());
     }
@@ -507,87 +751,125 @@ class StorageQueueIntegrationTest {
     @Test
     void queueUsesPersistedProxyWithoutRestartAndRejectsInvalidSettings() throws Exception {
         setup("/ok");
-        catalog.replaceRequest(request, "curl 'http://127.0.0.1:1/ok' --data-raw 'proxy-body'", 1);
-        var previous = settings.get();
+        requests.replaceCurl(
+                request, new CurlBo("curl 'http://127.0.0.1:1/ok' --data-raw 'proxy-body'", 1));
+        var previous = settings.query();
         var proxy = new ProxySettings("http", "127.0.0.1", server.getAddress().getPort());
-        settings.save(new SettingsService.Settings(true, 2, 3, 30, previous.version(), proxy));
-        assertEquals(proxy, new SettingsService(db).get().proxy());
-        var saved = settings.get();
-        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
-                true, 2, 3, 30, saved.version(), new ProxySettings("http", "http://user:secret@proxy", 80))));
-        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
-                true, 2, 3, 30, saved.version(), new ProxySettings("http", "localhost", 0))));
-        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
-                true, 2, 3, 30, saved.version(), new ProxySettings("other", "localhost", 80))));
-        assertEquals(saved, settings.get(), "invalid saves must not change stored settings");
+        settings.save(new SettingsBo(true, 2, 3, 30, previous.version(), proxy));
+        assertEquals(proxy, settings.query().proxy());
+        var saved = settings.query();
+        assertThrows(
+                ApiException.class,
+                () ->
+                        settings.save(
+                                new SettingsBo(
+                                        true,
+                                        2,
+                                        3,
+                                        30,
+                                        saved.version(),
+                                        new ProxySettings(
+                                                "http", "http://user:secret@proxy", 80))));
+        assertThrows(
+                ApiException.class,
+                () ->
+                        settings.save(
+                                new SettingsBo(
+                                        true,
+                                        2,
+                                        3,
+                                        30,
+                                        saved.version(),
+                                        new ProxySettings("http", "localhost", 0))));
+        assertThrows(
+                ApiException.class,
+                () ->
+                        settings.save(
+                                new SettingsBo(
+                                        true,
+                                        2,
+                                        3,
+                                        30,
+                                        saved.version(),
+                                        new ProxySettings("other", "localhost", 80))));
+        assertEquals(saved, settings.query());
         String batch = manual(false);
         complete(batch);
         assertEquals("success", status(batch));
         assertEquals(List.of("proxy-body"), bodies);
         assertEquals(1, hits.get());
-        assertThrows(ApiException.class, () -> settings.save(new SettingsService.Settings(
-                true, 2, 3, 30, previous.version(), ProxySettings.system())));
-        assertEquals(proxy, settings.get().proxy(), "stale saves must not change proxy settings");
+        assertThrows(
+                ApiException.class,
+                () ->
+                        settings.save(
+                                new SettingsBo(
+                                        true,
+                                        2,
+                                        3,
+                                        30,
+                                        previous.version(),
+                                        ProxySettings.system())));
+        assertEquals(proxy, settings.query().proxy());
     }
 
     @Test
-    void legacyBackupWithoutProxyFieldsStillRestores() {
+    void missingNewBackupFieldsAreRejectedWithoutReplacingData() {
         setup("/ok");
-        catalog.addTemplate(platform, "旧备份中没有的模板", ResultRules.defaults());
-        var exported = (Map<String, Object>) backups.export(new BackupService.Request(null, false, null, false));
-        var backup = Json.map(Json.write(exported));
-        var payload = (Map<String, Object>) backup.get("payload");
-        ((Map<String, Object>) payload.get("settings")).remove("proxy");
-        payload.remove("templates");
-        var previous = settings.get();
-        settings.save(new SettingsService.Settings(true, 2, 20, 30, previous.version(),
-                new ProxySettings("http", "127.0.0.1", 12345)));
-        backups.restore(new BackupService.Request(null, false, backup, true));
-        assertEquals(ProxySettings.system(), settings.get().proxy());
-        assertTrue(catalog.templates(platform).isEmpty());
-        assertTrue(settings.get().paused());
+        String template = addTemplate(platform, "不能被删除的模板", ResultRules.defaults());
+        var exported = config(false);
+        for (String field : List.of("proxy", "templates")) {
+            var damaged = Json.map(Json.write(exported));
+            var payload = (Map<String, Object>) damaged.get("payload");
+            if (field.equals("proxy"))
+                ((Map<String, Object>) payload.get("settings")).remove(field);
+            else payload.remove(field);
+            assertThrows(ApiException.class, () -> restore(decodeMap(damaged)));
+            assertEquals(template, templates.queryList(platform).getFirst().getId());
+        }
+        assertTrue(requests.queryRevision(request, 1).rawCurl().contains("test-only-credential"));
     }
 
     @Test
-    void actualSqliteSecretsAreEncryptedAndVersionIsFrozen() throws Exception {
+    void actualSqliteRequestsArePlainAndQueuedVersionIsFrozen() throws Exception {
         setup("/ok");
         String batch = manual(false);
-        catalog.replaceRequest(request, "curl '" + url + "/ok' --data-raw 'second-body'", 1);
+        requests.replaceCurl(
+                request, new CurlBo("curl '" + url + "/ok' --data-raw 'second-body'", 1));
         complete(batch);
         assertEquals("success", status(batch));
         assertEquals(List.of("first-body"), bodies);
-        assertEquals(
-                1,
-                Db.integer(
-                        ((List<Map<String, Object>>) runs.batch(batch).get("items")).getFirst(),
-                        "requestRevision"));
-        assertEquals(
-                2,
-                Db.integer(
-                        db.one("SELECT current_revision FROM requests WHERE id=?", request),
-                        "currentRevision"));
-        String ciphertext =
-                Db.text(
-                        db.one(
-                                "SELECT ciphertext FROM request_revisions WHERE request_id=? AND"
+        assertEquals(1, records.queryBatch(batch).getItems().getFirst().getRequestRevision());
+        assertEquals(2, integer("SELECT current_revision FROM requests WHERE id=?", request));
+        assertTrue(
+                text(
+                                "SELECT raw_curl FROM request_revisions WHERE request_id=? AND"
+                                        + " revision=1",
+                                request)
+                        .contains("test-only-credential"));
+        var spec =
+                Json.read(
+                        text(
+                                "SELECT spec_json FROM request_revisions WHERE request_id=? AND"
                                         + " revision=1",
                                 request),
-                        "ciphertext");
-        assertFalse(ciphertext.contains("test-only-credential"));
-        assertThrows(
-                IllegalStateException.class, () -> secrets.decrypt(ciphertext, request + ":2"));
+                        RequestSpec.class);
+        assertEquals("first-body", new String(spec.bodyBytes(), StandardCharsets.UTF_8));
+        assertEquals(
+                "second-body",
+                new String(
+                        requests.queryRevision(request, null).spec().bodyBytes(),
+                        StandardCharsets.UTF_8));
     }
 
     @Test
     void manualIdempotencyAndDailyMarkersSurviveLogCleanup() throws Exception {
         setup("/ok");
-        var command =
-                new RunService.ManualRun("request", request, false, UUID.randomUUID().toString());
+        var command = new ManualRunBo("request", request, false, UUID.randomUUID().toString());
         var ids = runs.manual(command);
         assertEquals(ids, runs.manual(command));
         complete(ids.getFirst());
         assertEquals(1, hits.get());
-        db.update("DELETE FROM run_items");
+        jdbc.update("DELETE FROM run_items");
         String second = manual(false);
         complete(second);
         assertEquals("skipped", status(second));
@@ -603,14 +885,11 @@ class StorageQueueIntegrationTest {
         setup("/hold-expired");
         String batch = manual(false);
         assertTrue(entered.await(5, TimeUnit.SECONDS));
-        catalog.replaceRequest(request, "curl '" + url + "/ok'", 1);
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/ok'", 1));
         release.countDown();
         complete(batch);
         assertEquals("expired", status(batch));
-        assertFalse(
-                Db.flag(
-                        db.one("SELECT auth_paused FROM requests WHERE id=?", request),
-                        "authPaused"));
+        assertEquals(0, integer("SELECT auth_paused FROM requests WHERE id=?", request));
         String next = manual(false);
         complete(next);
         assertEquals("success", status(next));
@@ -626,49 +905,71 @@ class StorageQueueIntegrationTest {
         complete(second);
         assertEquals("skipped", status(second));
         assertEquals(1, hits.get());
-        var row = db.one("SELECT version FROM requests WHERE id=?", request);
-        catalog.replaceRequest(request, "curl '" + url + "/expired'", Db.integer(row, "version"));
+        requests.replaceCurl(
+                request,
+                new CurlBo(
+                        "curl '" + url + "/expired'",
+                        integer("SELECT version FROM requests WHERE id=?", request)));
         String force = manual(true);
         complete(force);
         assertEquals("expired", status(force));
-        assertTrue(
-                Db.flag(
-                        db.one("SELECT auth_paused FROM requests WHERE id=?", request),
-                        "authPaused"));
-        row = db.one("SELECT version FROM requests WHERE id=?", request);
-        catalog.replaceRequest(request, "curl '" + url + "/ok'", Db.integer(row, "version"));
-        assertFalse(
-                Db.flag(
-                        db.one("SELECT auth_paused FROM requests WHERE id=?", request),
-                        "authPaused"));
+        assertEquals(1, integer("SELECT auth_paused FROM requests WHERE id=?", request));
+        requests.replaceCurl(
+                request,
+                new CurlBo(
+                        "curl '" + url + "/ok'",
+                        integer("SELECT version FROM requests WHERE id=?", request)));
+        assertEquals(0, integer("SELECT auth_paused FROM requests WHERE id=?", request));
         String last = manual(true);
         complete(last);
         assertEquals("success", status(last));
     }
 
-    @Test
-    void sameOccurrenceDeduplicatesAcrossScheduleRevision() throws Exception {
-        setup("/ok");
-        Instant at = clock.instant();
-        var s = schedules.get(platform);
-        runs.automatic(platform, s, at);
-        await(() -> runs.active().isEmpty());
+    SchedulePlan enableAutomatic(List<String> times, int catchupMinutes) {
+        var s = schedules.queryById(platform);
         schedules.save(
                 platform,
-                new ScheduleSpec(
-                        false,
+                new ScheduleBo(
+                        true,
                         "daily",
                         s.weekdays(),
-                        List.of("09:00", "10:00"),
+                        times,
                         s.timezone(),
                         0,
-                        120,
+                        catchupMinutes,
                         true,
                         s.revision()));
-        runs.automatic(platform, schedules.get(platform), at);
+        var global = settings.query();
+        settings.save(
+                new SettingsBo(
+                        false,
+                        global.concurrency(),
+                        global.timeoutSeconds(),
+                        global.retentionDays(),
+                        global.version(),
+                        global.proxy()));
+        return new SchedulePlan(
+                platform,
+                schedules.queryById(platform).toSpec(),
+                Instant.parse(
+                        text(
+                                "SELECT effective_from FROM platform_schedules WHERE platform_id=?",
+                                platform)));
+    }
+
+    @Test
+    void sameOccurrenceDeduplicatesAcrossScheduleRevisionAndLogCleanup() throws Exception {
+        setup("/ok");
+        Instant at = clock.instant();
+        var plan = enableAutomatic(List.of("08:00"), 120);
+        runs.automatic(plan, at, coordinator.scanGeneration().orElseThrow());
+        await(() -> records.active().isEmpty());
+        jdbc.update("DELETE FROM run_items");
+        var edited = enableAutomatic(List.of("08:00", "09:00"), 120);
+        runs.automatic(edited, at, coordinator.scanGeneration().orElseThrow());
         assertEquals(
                 1,
-                db.count(
+                count(
                         "SELECT COUNT(*) FROM run_batches WHERE platform_id=? AND source='auto'",
                         platform));
         assertEquals(1, hits.get());
@@ -677,145 +978,647 @@ class StorageQueueIntegrationTest {
     @Test
     void cancelsPendingAndRefusesDeletingActiveRequests() throws Exception {
         setup("/hold");
-        catalog.addRequest(account, "第二请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        addRequest(account, "第二请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
         String batch =
                 runs.manual(
-                                new RunService.ManualRun(
+                                new ManualRunBo(
                                         "platform", platform, false, UUID.randomUUID().toString()))
                         .getFirst();
         assertTrue(entered.await(5, TimeUnit.SECONDS));
-        assertThrows(ApiException.class, () -> catalog.delete("platforms", platform));
+        assertThrows(ApiException.class, () -> platforms.delete(platform));
+        assertThrows(ApiException.class, () -> accounts.delete(account));
+        assertThrows(ApiException.class, () -> requests.delete(request));
         runs.cancel(batch);
         release.countDown();
         complete(batch);
-        var items = (List<Map<String, Object>>) runs.batch(batch).get("items");
-        assertEquals("success", Db.text(items.get(0), "status"));
-        assertEquals("cancelled", Db.text(items.get(1), "status"));
+        var items = records.queryBatch(batch).getItems();
+        assertEquals("success", items.get(0).getStatus());
+        assertEquals("cancelled", items.get(1).getStatus());
         assertEquals(1, hits.get());
     }
 
     @Test
-    void restartRecoveryMarksRunningUnknown() throws Exception {
+    void restartRecoveryMarksRunningUnknownWithoutReplay() throws Exception {
         setup("/ok");
         String batch = manual(false);
         complete(batch);
-        db.update("UPDATE run_items SET status='running' WHERE batch_id=?", batch);
-        db.update("UPDATE run_batches SET status='running' WHERE id=?", batch);
+        jdbc.update("UPDATE run_items SET status='running' WHERE batch_id=?", batch);
+        jdbc.update("UPDATE run_batches SET status='running' WHERE id=?", batch);
         runs.recover();
         assertEquals("unknown", status(batch));
         assertEquals(
                 1,
-                db.count(
+                count(
                         "SELECT COUNT(*) FROM request_day_states WHERE request_id=? AND"
                                 + " unknown_pending=1",
                         request));
-        await(() -> runs.active().isEmpty());
+        await(() -> records.active().isEmpty());
+        assertEquals(1, hits.get());
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
         assertEquals(1, hits.get());
     }
 
     @Test
-    void encryptedBackupIsPortableToDifferentMasterKeyAndRejectsWrongPassword() throws Exception {
+    void fullPlainBackupRoundTripRestoresCurrentCurlTemplatesSettingsAndMarkers() throws Exception {
         setup("/ok");
-        String template = catalog.addTemplate(platform, "签到模板", ResultRules.defaults());
+        String template = addTemplate(platform, "签到模板", ResultRules.defaults());
         String batch = manual(false);
         complete(batch);
-        String password = "local-test-backup-password";
-        var previous = settings.get();
+        requests.replaceCurl(
+                request,
+                new CurlBo("curl '" + url + "/ok' -H 'Cookie: test-only-credential=beta'", 1));
+        var previous = settings.query();
         var proxy = new ProxySettings("http", "127.0.0.1", 12345);
-        settings.save(new SettingsService.Settings(true, 3, 7, 45, previous.version(), proxy));
-        var encrypted =
-                (Map<String, Object>)
-                        backups.export(new BackupService.Request(password, true, null, false));
-        assertFalse(Json.write(encrypted).contains("test-only-credential"));
-        catalog.updateTemplate(platform, template, "导出后修改", ResultRules.defaults(), 1);
-        assertThrows(
-                ApiException.class,
-                () -> backups.restore(new BackupService.Request("wrong", false, encrypted, true)));
-        assertEquals(1, db.count("SELECT COUNT(*) FROM platforms"));
-        var different =
-                new SecretStore(
-                        migrator,
-                        lock,
-                        Base64.getEncoder().encodeToString(new byte[32]),
-                        "ignored");
-        var destination =
-                new BackupService(db, catalog, different, runs, parser, clock, transactions);
-        destination.restore(new BackupService.Request(password, false, encrypted, true));
-        var restoredCatalog = new CatalogService(db, mapper, parser, different, clock);
-        assertTrue(restoredCatalog.revision(request, 1).rawCurl().contains("test-only-credential"));
-        assertThrows(IllegalStateException.class, () -> catalog.revision(request, 1));
-        assertTrue(settings.get().paused());
-        assertEquals(3, settings.get().concurrency());
-        assertEquals(7, settings.get().timeoutSeconds());
-        assertEquals(45, settings.get().retentionDays());
-        assertEquals(proxy, settings.get().proxy());
-        assertEquals(template, catalog.templates(platform).getFirst().get("id"));
-        assertEquals("签到模板", catalog.templates(platform).getFirst().get("name"));
-        assertEquals(ResultRules.defaults(), catalog.templates(platform).getFirst().get("rules"));
+        settings.save(new SettingsBo(true, 3, 7, 45, previous.version(), proxy));
+        var exported = config(true);
+        assertEquals("signdesk-plain-v1", exported.format());
+        assertTrue(Json.write(exported).contains("test-only-credential=beta"));
+        assertFalse(Json.write(exported).contains("response-only-fixture-secret"));
+        templates.update(
+                platform, template, new RequestTemplateBo("导出后修改", ResultRules.defaults(), 1));
+        await(
+                () -> {
+                    try {
+                        runs.beginMaintenance();
+                        runs.endMaintenance();
+                        return true;
+                    } catch (ApiException e) {
+                        return false;
+                    }
+                });
+        Instant importTime = clock.instant();
+        restore(exported);
+        assertTrue(
+                requests.queryRevision(request, 1).rawCurl().contains("test-only-credential=beta"));
+        assertEquals(1, count("SELECT COUNT(*) FROM request_revisions"));
+        assertTrue(settings.query().paused());
+        assertEquals(3, settings.query().concurrency());
+        assertEquals(7, settings.query().timeoutSeconds());
+        assertEquals(45, settings.query().retentionDays());
+        assertEquals(proxy, settings.query().proxy());
+        assertEquals(template, templates.queryList(platform).getFirst().getId());
+        assertEquals("签到模板", templates.queryList(platform).getFirst().getName());
+        assertEquals(ResultRules.defaults(), templates.queryList(platform).getFirst().getRules());
         assertEquals(
-                1, db.count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
+                1, count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_items"));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_batches"));
+        assertEquals(1, integer("SELECT current_revision FROM requests WHERE id=?", request));
+        assertEquals(
+                importTime.toString(),
+                text(
+                        "SELECT effective_from FROM platform_schedules WHERE platform_id=?",
+                        platform));
+        assertEquals(1, hits.get(), "import must not send requests");
     }
 
     @Test
     void invalidTemplateBackupsAreRejectedBeforeReplacingData() {
         setup("/ok");
-        String template = catalog.addTemplate(platform, "有效模板", ResultRules.defaults());
-        var exported = (Map<String, Object>) backups.export(new BackupService.Request(null, false, null, false));
-        var invalidRules = new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null);
-        for (var change : List.of(
-                Map.of("platformId", "1"), Map.of("id", "9223372036854775808"),
-                Map.of("id", "0"), Map.of("name", " "), Map.of("rules", invalidRules))) {
+        String template = addTemplate(platform, "有效模板", ResultRules.defaults());
+        var exported = config(false);
+        var invalidRules =
+                new ResultRules(new ResultRules.Match("bad[*]", 0, null), null, null, null);
+        for (var change :
+                List.of(
+                        Map.of("platformId", "1"),
+                        Map.of("id", "9223372036854775808"),
+                        Map.of("id", "0"),
+                        Map.of("id", "abcdef0123456789abcdef0123456789"),
+                        Map.of("name", " "),
+                        Map.of("rules", invalidRules))) {
             var damaged = Json.map(Json.write(exported));
             var payload = (Map<String, Object>) damaged.get("payload");
-            var templates = (List<Map<String, Object>>) payload.get("templates");
-            templates.getFirst().putAll(change);
-            assertThrows(ApiException.class,
-                    () -> backups.restore(new BackupService.Request(null, false, damaged, true)));
-            assertEquals(template, catalog.templates(platform).getFirst().get("id"));
-            assertEquals(1, db.count("SELECT COUNT(*) FROM requests"));
-            assertTrue(catalog.revision(request, 1).rawCurl().contains("test-only-credential"));
+            var list = (List<Map<String, Object>>) payload.get("templates");
+            list.getFirst().putAll(change);
+            assertThrows(ApiException.class, () -> restore(decodeMap(damaged)));
+            assertEquals(template, templates.queryList(platform).getFirst().getId());
+            assertEquals(1, count("SELECT COUNT(*) FROM requests"));
+            assertTrue(
+                    requests.queryRevision(request, 1).rawCurl().contains("test-only-credential"));
         }
         var duplicate = Json.map(Json.write(exported));
-        var payload = (Map<String, Object>) duplicate.get("payload");
-        var templates = (List<Map<String, Object>>) payload.get("templates");
-        templates.add(templates.getFirst());
-        assertThrows(ApiException.class,
-                () -> backups.restore(new BackupService.Request(null, false, duplicate, true)));
-        assertEquals(1, catalog.templates(platform).size());
+        var list =
+                (List<Map<String, Object>>)
+                        ((Map<String, Object>) duplicate.get("payload")).get("templates");
+        list.add(list.getFirst());
+        assertThrows(ApiException.class, () -> restore(decodeMap(duplicate)));
+        assertEquals(1, templates.queryList(platform).size());
     }
 
     @Test
-    void plainExportContainsNoRequestAndRestoreDisablesPlaceholders() {
+    void configExportContainsNoRequestAndRestoreDisablesPlaceholders() {
         setup("/ok");
-        String template = catalog.addTemplate(platform, "积分模板", ResultRules.defaults());
-        var config =
-                (Map<String, Object>)
-                        backups.export(new BackupService.Request(null, false, null, false));
-        String text = Json.write(config);
+        String template = addTemplate(platform, "积分模板", ResultRules.defaults());
+        var exported = config(false);
+        String text = Json.write(exported);
         assertFalse(text.contains("test-only-credential"));
         assertFalse(text.contains("first-body"));
         assertFalse(text.contains(url));
-        catalog.deleteTemplate(platform, template);
-        backups.restore(new BackupService.Request(null, false, config, true));
-        assertEquals(template, catalog.templates(platform).getFirst().get("id"));
-        assertEquals(ResultRules.defaults(), catalog.templates(platform).getFirst().get("rules"));
-        assertEquals(0, db.count("SELECT COUNT(*) FROM request_revisions"));
-        assertFalse(Db.flag(db.one("SELECT enabled FROM requests WHERE id=?", request), "enabled"));
+        assertFalse(text.contains("rawCurl"));
+        assertTrue(exported.payload().completed().isEmpty());
+        assertTrue(exported.payload().pending().isEmpty());
+        templates.delete(platform, template);
+        restore(exported);
+        assertEquals(template, templates.queryList(platform).getFirst().getId());
+        assertEquals(ResultRules.defaults(), templates.queryList(platform).getFirst().getRules());
+        assertEquals(0, count("SELECT COUNT(*) FROM request_revisions"));
+        assertEquals(0, integer("SELECT enabled FROM requests WHERE id=?", request));
+        assertEquals(1, integer("SELECT auth_paused FROM requests WHERE id=?", request));
     }
 
     @Test
-    void singleInstanceAndMissingKeyFailWithoutOverwritingData() throws Exception {
+    void singleInstanceAndPlainStorageNeedNoKeyOrExternalSecret() throws Exception {
         setup("/ok");
         assertThrows(IllegalStateException.class, () -> new InstanceLock(lock.directory()));
-        Path missing = DIR.resolve("missing-key/master.key");
-        assertThrows(
-                IllegalStateException.class,
-                () -> new SecretStore(migrator, lock, "", missing.toString()));
-        assertFalse(Files.exists(missing));
-        var error =
+        assertTrue(requests.queryRevision(request, 1).rawCurl().contains("test-only-credential"));
+        try (var paths = Files.walk(DIR)) {
+            assertTrue(paths.noneMatch(p -> p.getFileName().toString().endsWith(".key")));
+        }
+        assertEquals(
+                409,
                 assertThrows(
-                        ApiException.class,
-                        () -> catalog.updatePlatform(platform, "其他名称", "", true, 99));
-        assertEquals(409, error.status());
+                                ApiException.class,
+                                () -> updatePlatform(platform, "其他名称", "", true, 99))
+                        .status());
+    }
+
+    @Test
+    void exactOneMiBResponseIsCompleteRatherThanTruncated() throws Exception {
+        setup("/response-exact");
+        String batch = manual(false);
+        complete(batch);
+        assertEquals("unknown", status(batch));
+        assertEquals("complete", response(batch).state());
+        assertEquals(1048576, response(batch).byteLength());
+        assertEquals("e".repeat(1048576), response(batch).body());
+    }
+
+    @Test
+    void proxySwitchesClearPersistedHostAndPortIncludingFreshMapperReads() {
+        setup("/ok");
+        var old = settings.query();
+        settings.save(
+                new SettingsBo(
+                        true,
+                        2,
+                        20,
+                        30,
+                        old.version(),
+                        new ProxySettings("http", "127.0.0.1", 12345)));
+        for (var proxy : List.of(new ProxySettings("direct", "", 0), ProxySettings.system())) {
+            var current = settings.query();
+            settings.save(new SettingsBo(true, 2, 20, 30, current.version(), proxy));
+            assertEquals(proxy, settings.query().proxy());
+            assertEquals("", text("SELECT proxy_host FROM settings"));
+            assertEquals(0, integer("SELECT proxy_port FROM settings"));
+            assertEquals(proxy.mode(), text("SELECT proxy_mode FROM settings"));
+        }
+    }
+
+    @Test
+    void forceCannotBypassDisabledParentsOrCredentialPause() throws Exception {
+        setup("/ok");
+        jdbc.update("UPDATE requests SET auth_paused=1 WHERE id=?", request);
+        String paused = manual(true);
+        complete(paused);
+        assertEquals("skipped", status(paused));
+        assertEquals(0, hits.get());
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/ok'", 1));
+        accounts.update(account, new AccountBo("停用账号", false, 1));
+        assertEquals(409, assertThrows(ApiException.class, () -> manual(true)).status());
+        accounts.update(account, new AccountBo("启用账号", true, 2));
+        updatePlatform(platform, "停用平台", "", false, 1);
+        assertEquals(409, assertThrows(ApiException.class, () -> manual(true)).status());
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void queuedItemsRecheckEnablementRatherThanTrustingTheFrozenBatch() throws Exception {
+        setup("/hold");
+        String second =
+                addRequest(account, "稍后停用", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        String batch =
+                runs.manual(new ManualRunBo("platform", platform, true, "queued-gate-fixture"))
+                        .getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        requests.update(second, new RequestBo("稍后停用", false, ResultRules.defaults(), 1));
+        release.countDown();
+        complete(batch);
+        assertEquals(
+                List.of("success", "skipped"),
+                records.queryBatch(batch).getItems().stream().map(BatchItemVo::getStatus).toList());
+        assertEquals(1, hits.get());
+    }
+
+    @Test
+    void samePlatformIsSerialAndCrossPlatformConcurrencyIsBoundedWithoutHoldingTransactions()
+            throws Exception {
+        AtomicInteger concurrent = new AtomicInteger(), max = new AtomicInteger();
+        CountDownLatch twoEntered = new CountDownLatch(2), unblock = new CountDownLatch(1);
+        server.createContext(
+                "/parallel",
+                e -> {
+                    hits.incrementAndGet();
+                    int active = concurrent.incrementAndGet();
+                    max.accumulateAndGet(active, Math::max);
+                    twoEntered.countDown();
+                    try {
+                        unblock.await(10, TimeUnit.SECONDS);
+                        byte[] reply = "{\"code\":0}".getBytes(StandardCharsets.UTF_8);
+                        e.sendResponseHeaders(200, reply.length);
+                        e.getResponseBody().write(reply);
+                    } catch (Exception ignored) {
+                    } finally {
+                        concurrent.decrementAndGet();
+                        e.close();
+                    }
+                });
+        try {
+            for (int i = 0; i < 3; i++) {
+                String p = addPlatform("并发平台" + i, "", true), a = addAccount(p, "账号", true);
+                addRequest(a, "请求", "curl '" + url + "/parallel'", ResultRules.defaults(), true);
+            }
+            var batches =
+                    runs.manual(new ManualRunBo("all", null, false, "bounded-concurrency-fixture"));
+            assertEquals(3, batches.size());
+            assertTrue(twoEntered.await(5, TimeUnit.SECONDS));
+            assertEquals(2, concurrent.get());
+            assertEquals(2, integer("SELECT COUNT(*) FROM run_items WHERE status='running'"));
+            assertEquals(1, integer("SELECT COUNT(*) FROM run_items WHERE status='queued'"));
+            assertTimeout(
+                    Duration.ofSeconds(2),
+                    () -> {
+                        var v = settings.query();
+                        settings.save(
+                                new SettingsBo(
+                                        true, 2, 20, 30, v.version(), ProxySettings.system()));
+                    });
+            unblock.countDown();
+            for (String batch : batches) complete(batch);
+            assertEquals(2, max.get());
+            assertEquals(3, hits.get());
+        } finally {
+            unblock.countDown();
+            server.removeContext("/parallel");
+        }
+    }
+
+    @Test
+    void samePlatformRequestsNeverOverlapEvenWithTwoAvailablePlatformSlots() throws Exception {
+        setup("/hold");
+        addRequest(account, "第二请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        String batch =
+                runs.manual(new ManualRunBo("platform", platform, false, "serial-platform-fixture"))
+                        .getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertEquals(1, hits.get());
+        assertEquals(1, integer("SELECT COUNT(*) FROM run_items WHERE status='running'"));
+        assertEquals(1, integer("SELECT COUNT(*) FROM run_items WHERE status='queued'"));
+        assertEquals(
+                409,
+                assertThrows(
+                                ApiException.class,
+                                () ->
+                                        runs.manual(
+                                                new ManualRunBo(
+                                                        "request",
+                                                        request,
+                                                        true,
+                                                        "same-request-active-fixture")))
+                        .status());
+        release.countDown();
+        complete(batch);
+        assertEquals(2, hits.get());
+    }
+
+    @Test
+    void globalRoutingIsReadAtSendStartWhileRevisionAndIntervalRemainFrozen() throws Exception {
+        setup("/hold");
+        String second =
+                addRequest(
+                        account,
+                        "代理后发",
+                        "curl 'http://127.0.0.1:1/ok' --data-raw 'frozen-proxy-body'",
+                        ResultRules.defaults(),
+                        true);
+        var plan = schedules.queryById(platform);
+        schedules.save(
+                platform,
+                new ScheduleBo(
+                        false,
+                        "daily",
+                        plan.weekdays(),
+                        plan.times(),
+                        plan.timezone(),
+                        2,
+                        120,
+                        true,
+                        plan.revision()));
+        String batch =
+                runs.manual(
+                                new ManualRunBo(
+                                        "platform",
+                                        platform,
+                                        false,
+                                        "global-send-settings-fixture"))
+                        .getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            var current = settings.query();
+            settings.save(
+                    new SettingsBo(
+                            true,
+                            2,
+                            1,
+                            30,
+                            current.version(),
+                            new ProxySettings("http", "127.0.0.1", server.getAddress().getPort())));
+            requests.replaceCurl(
+                    second,
+                    new CurlBo("curl '" + url + "/response' --data-raw 'new-not-frozen'", 1));
+            plan = schedules.queryById(platform);
+            schedules.save(
+                    platform,
+                    new ScheduleBo(
+                            false,
+                            "daily",
+                            plan.weekdays(),
+                            plan.times(),
+                            plan.timezone(),
+                            0,
+                            120,
+                            true,
+                            plan.revision()));
+            Thread.sleep(
+                    1100); // The already-sending first request keeps its original 20-second limit.
+            long released = System.nanoTime();
+            release.countDown();
+            await(
+                    () ->
+                            records.queryBatch(batch)
+                                    .getItems()
+                                    .getFirst()
+                                    .getStatus()
+                                    .equals("success"));
+            assertTimeout(
+                    Duration.ofSeconds(1), () -> updatePlatform(platform, "间隔期间可编辑", "", true, 1));
+            complete(batch);
+            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - released) >= 1800);
+            assertEquals(
+                    List.of("success", "success"),
+                    records.queryBatch(batch).getItems().stream()
+                            .map(BatchItemVo::getStatus)
+                            .toList());
+            assertEquals(List.of("frozen-proxy-body"), bodies);
+            assertEquals(2, hits.get());
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void maintenanceAndNewEnqueueAreMutuallyExclusiveAndActiveImportIsRejected() throws Exception {
+        setup("/hold");
+        var snapshot = config(true);
+        var plan =
+                new SchedulePlan(
+                        platform,
+                        schedules.queryById(platform).toSpec(),
+                        Instant.parse(
+                                text(
+                                        "SELECT effective_from FROM platform_schedules WHERE"
+                                            + " platform_id=?",
+                                        platform)));
+        long generation = coordinator.scanGeneration().orElseThrow();
+        runs.beginMaintenance();
+        try {
+            assertEquals(409, assertThrows(ApiException.class, () -> manual(false)).status());
+            runs.automatic(plan, clock.instant(), generation);
+            assertEquals(0, count("SELECT COUNT(*) FROM run_batches"));
+            assertThrows(ApiException.class, () -> restore(snapshot));
+        } finally {
+            runs.endMaintenance();
+        }
+        String batch = manual(false);
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertEquals(409, assertThrows(ApiException.class, () -> restore(snapshot)).status());
+        assertEquals(1, count("SELECT COUNT(*) FROM requests"));
+        release.countDown();
+        complete(batch);
+        assertEquals(1, hits.get());
+    }
+
+    @Test
+    void failedResultPersistenceRollsBackMarkersAndNeverRetriesHttp() throws Exception {
+        setup("/response");
+        jdbc.execute(
+                "CREATE TRIGGER fail_response_fixture BEFORE INSERT ON run_responses BEGIN SELECT"
+                        + " RAISE(ABORT,'fixture write rejected'); END");
+        String batch;
+        try {
+            batch = manual(false);
+            complete(batch);
+            assertEquals("unknown", status(batch));
+            assertEquals(1, hits.get());
+            assertEquals(0, count("SELECT COUNT(*) FROM run_responses"));
+            assertEquals(0, count("SELECT COUNT(*) FROM daily_completions"));
+            assertEquals(
+                    1, count("SELECT COUNT(*) FROM request_day_states WHERE unknown_pending=1"));
+            assertEquals("not_recorded", response(batch).state());
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_response_fixture");
+        }
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
+        assertEquals(1, hits.get());
+        String forced = manual(true);
+        complete(forced);
+        assertEquals("success", status(forced));
+        assertEquals(2, hits.get());
+        assertEquals(1, count("SELECT COUNT(*) FROM run_responses"));
+    }
+
+    @Test
+    void replaceFailureAfterDeletionRollsBackAllDataAndReleasesMaintenance() throws Exception {
+        setup("/ok");
+        String template = addTemplate(platform, "保留模板", ResultRules.defaults());
+        var exported = Json.map(Json.write(config(true)));
+        var ps =
+                (List<Map<String, Object>>)
+                        ((Map<String, Object>) exported.get("payload")).get("platforms");
+        ps.getFirst().put("name", "trigger-fixture");
+        var damaged = decodeMap(exported);
+        var before = settings.query();
+        jdbc.execute(
+                "CREATE TRIGGER fail_import_fixture BEFORE INSERT ON platforms WHEN"
+                        + " NEW.name='trigger-fixture' BEGIN SELECT RAISE(ABORT,'fixture import"
+                        + " rejected'); END");
+        try {
+            assertThrows(RuntimeException.class, () -> restore(damaged));
+            assertEquals("测试平台", mapper.selectById(platform).getName());
+            assertEquals(template, templates.queryList(platform).getFirst().getId());
+            assertEquals(before, settings.query());
+            assertTrue(
+                    requests.queryRevision(request, 1).rawCurl().contains("test-only-credential"));
+        } finally {
+            jdbc.execute("DROP TRIGGER fail_import_fixture");
+        }
+        String batch = manual(false);
+        complete(batch);
+        assertEquals("success", status(batch));
+    }
+
+    @Test
+    void fullBackupRestoresPendingMarkerButNeverResponsesOrAnActiveQueue() throws Exception {
+        setup("/unmatched");
+        String batch = manual(false);
+        complete(batch);
+        var exported = config(true);
+        assertEquals(1, exported.payload().pending().size());
+        assertTrue(exported.payload().completed().isEmpty());
+        await(
+                () -> {
+                    try {
+                        runs.beginMaintenance();
+                        runs.endMaintenance();
+                        return true;
+                    } catch (ApiException e) {
+                        return false;
+                    }
+                });
+        restore(exported);
+        assertEquals(1, count("SELECT COUNT(*) FROM request_day_states WHERE unknown_pending=1"));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_batches"));
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
+        assertEquals(1, hits.get());
+    }
+
+    @Test
+    void configurationPlaceholdersStayDisabledUntilCurlAndEnablementAreExplicitlyUpdated()
+            throws Exception {
+        setup("/ok");
+        restore(config(false));
+        assertThrows(ApiException.class, () -> manual(true));
+        requests.replaceCurl(request, new CurlBo("curl '" + url + "/ok'", 1));
+        assertEquals(0, integer("SELECT enabled FROM requests WHERE id=?", request));
+        assertEquals(0, integer("SELECT auth_paused FROM requests WHERE id=?", request));
+        requests.update(request, new RequestBo("每日签到", true, ResultRules.defaults(), 2));
+        String batch = manual(false);
+        complete(batch);
+        assertEquals("success", status(batch));
+    }
+
+    @Test
+    void automaticGatesUseInjectedClockForExpiredWindowAndBusinessDay() throws Exception {
+        setup("/ok");
+        var plan = enableAutomatic(List.of("08:00"), 120);
+        // Keep dispatch outside this short monitor block so the batch is valid when committed,
+        // then deterministically age it before prepare. The HTTP gate is still real SQLite.
+        synchronized (coordinator) {
+            runs.automatic(plan, clock.instant(), coordinator.scanGeneration().orElseThrow());
+            testClock.set(clock.instant().plusSeconds(3 * 3600));
+        }
+        await(() -> records.active().isEmpty());
+        assertEquals(1, count("SELECT COUNT(*) FROM run_items WHERE status='skipped'"));
+        assertEquals(0, hits.get());
+        testClock.set(Instant.parse("2026-10-09T15:59:00Z"));
+        var dayBoundary = enableAutomatic(List.of("23:59"), 1440);
+        synchronized (coordinator) {
+            runs.automatic(
+                    dayBoundary, clock.instant(), coordinator.scanGeneration().orElseThrow());
+            // Only two minutes elapse, well inside the frozen 24-hour window, but the business
+            // date changes in Asia/Shanghai. The persisted batch must still be skipped.
+            testClock.set(clock.instant().plusSeconds(120));
+        }
+        await(() -> records.active().isEmpty());
+        assertEquals(2, count("SELECT COUNT(*) FROM run_items WHERE status='skipped'"));
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void scannerHonorsEffectiveFromAndCoalescesMissedSlotsToLatestUtcInstant() throws Exception {
+        testClock.set(Instant.parse("2026-10-09T23:00:00Z"));
+        setup("/ok");
+        var s = schedules.queryById(platform);
+        schedules.save(
+                platform,
+                new ScheduleBo(
+                        true,
+                        "daily",
+                        s.weekdays(),
+                        List.of("08:00", "08:30", "09:00"),
+                        "Asia/Shanghai",
+                        0,
+                        180,
+                        true,
+                        s.revision()));
+        testClock.set(Instant.parse("2026-10-10T01:05:00Z"));
+        var current = settings.query();
+        settings.save(new SettingsBo(false, 2, 20, 30, current.version(), ProxySettings.system()));
+        scanner.scan();
+        await(() -> records.active().isEmpty());
+        assertEquals(1, count("SELECT COUNT(*) FROM run_batches"));
+        assertEquals("2026-10-10T01:00:00Z", text("SELECT scheduled_at FROM run_batches"));
+        assertEquals("2026-10-10", text("SELECT business_date FROM run_batches"));
+        assertEquals(1, hits.get());
+        scanner.scan();
+        assertEquals(1, count("SELECT COUNT(*) FROM run_batches"));
+        var plan = schedules.queryById(platform);
+        schedules.save(
+                platform,
+                new ScheduleBo(
+                        true,
+                        "daily",
+                        plan.weekdays(),
+                        plan.times(),
+                        "Asia/Shanghai",
+                        0,
+                        180,
+                        true,
+                        plan.revision()));
+        scanner.scan();
+        assertEquals(1, count("SELECT COUNT(*) FROM run_batches"));
+    }
+
+    @Test
+    void dashboardUsesEachPlatformBusinessDateWithoutExposingRequestSnapshots() {
+        testClock.set(Instant.parse("2026-10-08T16:05:00Z"));
+        setup("/ok");
+        String utc = addPlatform("UTC平台", "", true),
+                a = addAccount(utc, "UTC账号", true),
+                r = addRequest(a, "UTC请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        var plan = schedules.queryById(utc);
+        schedules.save(
+                utc,
+                new ScheduleBo(
+                        false,
+                        "daily",
+                        plan.weekdays(),
+                        plan.times(),
+                        "UTC",
+                        0,
+                        120,
+                        true,
+                        plan.revision()));
+        jdbc.update(
+                "INSERT INTO daily_completions VALUES(?,?,?)", request, "2026-10-09", Ids.next());
+        jdbc.update("INSERT INTO daily_completions VALUES(?,?,?)", r, "2026-10-08", Ids.next());
+        jdbc.update("INSERT INTO request_day_states VALUES(?,?,1)", r, "2026-10-08");
+        var dashboard = system.dashboard();
+        assertEquals("2026-10-09", dashboard.date());
+        assertEquals(2, dashboard.completed());
+        assertEquals(1, dashboard.needsAttention());
+        assertEquals(2, dashboard.platforms());
+        assertEquals(2, dashboard.requests());
+        String json = Json.write(dashboard);
+        assertFalse(json.contains("test-only-credential"));
+        assertFalse(json.contains("rawCurl"));
     }
 }

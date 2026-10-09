@@ -1,17 +1,25 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, report, confirm } from '../api'
+import { readBackupFile } from '../backupFile.mjs'
 const form = reactive({ paused: false, concurrency: 2, timeoutSeconds: 20, retentionDays: 30, version: 1,
   proxy: { mode: 'system', host: '', port: 0 } })
 const saving = ref(false),
-  includeRequests = ref(false),
-  password = ref(''),
-  importPassword = ref(''),
-  importFile = ref(null),
-  preview = ref(null),
-  fileInput = ref(null),
-  busy = ref(false)
+  includeRequests = ref(false)
+/** @type {import('vue').Ref<import('../backupFile.mjs').BackupFile | null>} */
+const importFile = ref(null)
+/** @type {import('vue').Ref<{platforms: number, accounts: number, requests: number, templates: number, includesRequests: boolean, message: string} | null>} */
+const preview = ref(null)
+/** @type {import('vue').Ref<HTMLInputElement | null>} */
+const fileInput = ref(null)
+const busy = ref(false)
+let importSession = 0
+onUnmounted(() => {
+  importSession++
+  importFile.value = null
+  preview.value = null
+})
 async function load() {
   try {
     Object.assign(form, await api('/settings'))
@@ -37,66 +45,69 @@ async function exportBackup() {
   try {
     const data = await api('/backups/export', 'POST', {
       includeRequests: includeRequests.value,
-      password: password.value,
     })
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const link = document.createElement('a')
     link.href = URL.createObjectURL(blob)
-    link.download = `signdesk-${includeRequests.value ? 'encrypted-backup' : 'config'}-${Date.now()}.json`
+    link.download = `signdesk-${includeRequests.value ? 'full-backup' : 'config'}-${Date.now()}.json`
     link.click()
     URL.revokeObjectURL(link.href)
-    password.value = ''
-    ElMessage.success('备份已导出')
+    ElMessage.success('明文 JSON 已导出，请妥善保管')
   } catch (e) {
     report(e)
   } finally {
     busy.value = false
   }
 }
+/** @param {Event} event @returns {Promise<void>} */
 async function chooseFile(event) {
+  const current = ++importSession
   preview.value = null
   importFile.value = null
   const file = event.target.files?.[0]
   if (!file) return
-  if (file.size > 12000000) return ElMessage.error('文件超过 12 MiB')
+  busy.value = true
   try {
-    importFile.value = JSON.parse(await file.text())
-  } catch {
-    ElMessage.error('请选择合法 JSON 备份文件')
+    const backup = await readBackupFile(file)
+    if (current === importSession) importFile.value = backup
+  } catch (e) {
+    if (current === importSession) report(e)
+  } finally {
+    if (current === importSession) busy.value = false
   }
 }
 async function previewImport() {
+  if (!importFile.value) return
+  const current = importSession
+  preview.value = null
   busy.value = true
   try {
-    preview.value = await api('/backups/preview', 'POST', {
-      backup: importFile.value,
-      password: importPassword.value,
-    })
+    const result = await api('/backups/preview', 'POST', { backup: importFile.value })
+    if (current === importSession) preview.value = result
   } catch (e) {
-    report(e)
+    if (current === importSession) report(e)
   } finally {
-    busy.value = false
+    if (current === importSession) busy.value = false
   }
 }
 async function importBackup() {
-  if (!preview.value || !(await confirm(preview.value.message + '。建议先导出现有配置的加密备份。'))) return
+  const current = importSession, backup = importFile.value
+  if (!preview.value || !backup) return
+  if (!(await confirm('将替换全部配置，不是合并导入。' + preview.value.message + ' 建议先导出现有配置；下载文件均为明文，请妥善保管。'))) return
+  if (current !== importSession) return
   busy.value = true
   try {
-    await api('/backups/import', 'POST', {
-      backup: importFile.value,
-      password: importPassword.value,
-      replace: true,
-    })
+    await api('/backups/import', 'POST', { backup, replace: true })
+    if (current !== importSession) return
     importFile.value = null
-    importPassword.value = ''
     preview.value = null
     if (fileInput.value) fileInput.value.value = ''
     await load()
     ElMessage.success('配置已恢复，定时保持暂停，请检查后恢复')
   } catch (e) {
-    report(e)
+    if (current === importSession) report(e)
   } finally {
-    busy.value = false
+    if (current === importSession) busy.value = false
   }
 }
 </script>
@@ -143,22 +154,16 @@ async function importBackup() {
     <div>
       <section class="panel">
         <div class="panel-head"><h2>导出配置 / 完整备份</h2></div>
-        <el-checkbox v-model="includeRequests">包含完整请求（必须密码加密）</el-checkbox
-        ><el-input
-          v-if="includeRequests"
-          v-model="password"
-          type="password"
-          show-password
-          placeholder="设置 10～200 字符备份密码"
-          class="space-top"
-          autocomplete="new-password"
-        />
+        <el-checkbox v-model="includeRequests" :disabled="busy">包含完整请求（明文，可能含凭证）</el-checkbox>
         <p class="muted">
-          普通配置排除 cURL、URL、Headers 和
-          Body；恢复后需重新导入请求。完整备份保留当前请求和完成标记，不包含历史执行日志。
+          两种导出均为明文 JSON。默认不含系统保存的 cURL、URL、Headers 和 Body，恢复后请求停用，需更新 cURL。
+          完整备份保留当前请求及完成／待确认标记；两者均不包含历史修订、执行日志、响应体或活动队列。
         </p>
+        <el-alert v-if="includeRequests" class="space-top" type="warning" :closable="false"
+          title="完整备份含明文 Cookie、Token、签名等敏感信息，请仅保存到可信位置，不要公开分享。" />
+        <p class="muted">两种模式都可能包含手工填入名称、备注或规则值的敏感信息，不保证隐私安全，导出前请自行检查。</p>
         <el-button :loading="busy" @click="exportBackup"
-          >导出{{ includeRequests ? '加密备份' : '配置' }}</el-button
+          >导出{{ includeRequests ? '完整备份' : '配置' }}</el-button
         >
       </section>
       <section class="panel">
@@ -168,15 +173,10 @@ async function importBackup() {
           type="file"
           accept="application/json,.json"
           aria-label="选择备份文件"
+          :disabled="busy"
           @change="chooseFile"
-        /><el-input
-          v-model="importPassword"
-          type="password"
-          show-password
-          placeholder="加密备份密码，普通配置留空"
-          class="space-top"
-          autocomplete="off"
         />
+        <p class="muted">仅支持 signdesk-plain-v1 明文 JSON（最多 12 MiB），不支持旧格式。先预览校验，再确认替换全部配置；导入后定时保持暂停。</p>
         <div class="actions space-top">
           <el-button :disabled="!importFile" :loading="busy" @click="previewImport">预览导入</el-button
           ><el-button v-if="preview" type="warning" :loading="busy" @click="importBackup"

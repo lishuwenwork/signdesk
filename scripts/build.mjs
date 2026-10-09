@@ -11,6 +11,7 @@ function run(command, args, directory) {
   if (result.status !== 0) process.exit(result.status || 1)
 }
 run('npm', ['ci', '--no-audit', '--no-fund'], 'frontend')
+run('npm', ['run', 'test:unit'], 'frontend')
 run('npm', ['run', 'build'], 'frontend')
 const dist = path.join(root, 'frontend/dist')
 if (!existsSync(path.join(dist, 'index.html'))) throw new Error('Frontend output missing')

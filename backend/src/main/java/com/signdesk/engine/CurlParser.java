@@ -19,7 +19,9 @@ public class CurlParser {
     private static final Set<String> METHODS =
             Set.of("GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS");
 
-    public record Preview(RequestSpec spec, List<String> warnings) {}
+    public record Preview(RequestSpec spec, List<String> warnings) {
+        @Override public String toString() { return "Preview[redacted]"; }
+    }
 
     public Preview parse(String raw) {
         if (raw == null || raw.isBlank() || raw.length() > 262144)

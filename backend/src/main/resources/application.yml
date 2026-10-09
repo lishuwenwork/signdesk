@@ -14,11 +14,10 @@ spring:
       enabled: false
 signdesk:
   data-dir: ${SIGNDESK_DATA_DIR:./data}
-  key-file: ${SIGNDESK_KEY_FILE:./secrets/master.key}
-  secret-key: ${SIGNDESK_SECRET_KEY:}
   allowed-hosts: ${SIGNDESK_ALLOWED_HOSTS:}
   scan-delay-ms: 5000
 mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl

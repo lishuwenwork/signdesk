@@ -185,9 +185,9 @@ function openTemplates(request = null) {
               ><el-tag v-else-if="!request.enabled" type="info" size="small">已停用</el-tag>
             </div>
             <div class="request-meta">
-              <span class="method mono">{{ request.method }}</span
-              ><span>{{ request.safeHost || '尚未导入请求内容' }}</span
-              ><span>版本 {{ request.currentRevision }}</span>
+              <span v-if="request.safeHost" class="method mono">{{ request.method }}</span
+              ><span>{{ request.safeHost || '未配置 cURL，需更新' }}</span
+              ><span v-if="request.safeHost">版本 {{ request.currentRevision }}</span>
             </div>
           </div>
           <div class="actions">
@@ -211,7 +211,7 @@ function openTemplates(request = null) {
                     >编辑名称 / 规则</el-dropdown-item
                   ><el-dropdown-item @click="openTemplates(request)"
                     >保存为接口模板</el-dropdown-item
-                  ><el-dropdown-item @click="openRequest(account.id, 'view', request)"
+                  ><el-dropdown-item :disabled="!request.safeHost" @click="openRequest(account.id, 'view', request)"
                     >查看完整请求</el-dropdown-item
                   ><el-dropdown-item
                     :disabled="
