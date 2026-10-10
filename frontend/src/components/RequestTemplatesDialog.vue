@@ -1,5 +1,6 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
+import DeskIcon from './DeskIcon.vue'
 import { ElMessage } from 'element-plus'
 import { api, report, confirm } from '../api'
 import { createRuleDraft, collectRules } from '../resultRules'
@@ -15,23 +16,24 @@ const templates = ref([]),
   error = ref(''),
   rules = ref(createRuleDraft())
 const form = reactive({ id: '', name: '', version: 1 })
-let session = 0
+let session = 0, loadSequence = 0
+onUnmounted(() => { session++; loadSequence++; templates.value = []; rules.value = createRuleDraft(); form.name = '' })
 function edit(template = null) {
   Object.assign(form, { id: template?.id || '', name: template?.name || '', version: template?.version || 1 })
   rules.value = createRuleDraft(template?.rules)
   editing.value = true
 }
 async function load() {
-  const current = session, platformId = props.platformId
+  const current = session, sequence = ++loadSequence, platformId = props.platformId
   loading.value = true
   error.value = ''
   try {
     const data = await api(`/platforms/${platformId}/templates`)
-    if (current === session) templates.value = data
+    if (current === session && sequence === loadSequence) templates.value = data
   } catch (e) {
-    if (current === session) error.value = e.message
+    if (current === session && sequence === loadSequence) error.value = e.message
   } finally {
-    if (current === session) loading.value = false
+    if (current === session && sequence === loadSequence) loading.value = false
   }
 }
 watch(
@@ -42,12 +44,16 @@ watch(
     editing.value = false
     saving.value = false
     error.value = ''
+    form.name = ''
+    rules.value = createRuleDraft()
     if (!open) return
     if (props.seed) edit(props.seed)
     load()
   },
+  { flush: 'sync' },
 )
 async function save() {
+  if (saving.value) return
   if (!form.name.trim()) return ElMessage.warning('请填写模板名称')
   const current = session, platformId = props.platformId
   saving.value = true
@@ -63,7 +69,10 @@ async function save() {
     emit('saved')
     await load()
   } catch (e) {
-    if (current === session) report(e)
+    if (current === session) {
+      error.value = e.status === 409 ? '模板版本冲突。草稿已保留，不会覆盖其他页面的修改；请返回列表重新读取最新模板。' : e.message
+      report(e)
+    }
   } finally {
     if (current === session) saving.value = false
   }
@@ -80,7 +89,10 @@ async function remove(template) {
     emit('saved')
     await load()
   } catch (e) {
-    if (current === session) report(e)
+    if (current === session) {
+      error.value = e.status === 409 ? '模板版本冲突。草稿已保留，不会覆盖其他页面的修改；请返回列表重新读取最新模板。' : e.message
+      report(e)
+    }
   } finally {
     if (current === session) saving.value = false
   }
@@ -93,12 +105,12 @@ async function remove(template) {
       type="info" :closable="false" class="space-top" />
     <el-alert v-if="error" :title="error" type="error" :closable="false" class="space-top" />
     <div v-if="editing" v-loading="saving" class="space-top">
-      <el-form label-position="top">
+      <el-form label-position="top" :disabled="saving">
         <el-form-item label="模板名称">
           <el-input v-model="form.name" maxlength="60" placeholder="例如：每日签到、领取奖励、查询积分" />
         </el-form-item>
       </el-form>
-      <ResultRulesEditor v-model="rules" />
+      <ResultRulesEditor v-model="rules" :disabled="saving" />
     </div>
     <div v-else v-loading="loading || saving" class="space-top">
       <div class="actions">
@@ -106,15 +118,12 @@ async function remove(template) {
         <span class="muted">{{ templates.length }} 份接口规则，可在添加请求时选择</span>
         <el-button v-if="error" @click="load">重新加载</el-button>
       </div>
-      <el-table v-if="templates.length" :data="templates" class="space-top">
-        <el-table-column prop="name" label="接口模板" min-width="160" />
-        <el-table-column label="操作" width="145">
-          <template #default="{ row }">
-            <el-button size="small" @click="edit(row)">编辑</el-button>
-            <el-button size="small" text type="danger" @click="remove(row)">删除</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+      <div v-if="templates.length" class="template-cards space-top">
+        <div v-for="template in templates" :key="template.id" class="template-card" :data-template-id="template.id">
+          <div class="template-card-header"><h3><DeskIcon name="template" />{{ template.name }}</h3><div class="template-actions"><el-button text size="small" @click="edit(template)">编辑</el-button><el-button text size="small" type="danger" @click="remove(template)">删除</el-button></div></div>
+          <p>版本 {{ template.version }} · 独立的名称与结果规则副本</p>
+        </div>
+      </div>
       <el-empty v-else-if="!loading && !error" description="还没有模板。也可以从已有请求的「更多」菜单保存一份。" />
     </div>
     <template #footer>
@@ -124,3 +133,13 @@ async function remove(template) {
     </template>
   </el-dialog>
 </template>
+<style scoped>
+.template-cards { display: grid; gap: 12px; }
+.template-card { border: 1px solid var(--line); border-radius: 8px; padding: 15px; }
+.template-card-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.template-card-header h3 { font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.template-card-header h3 .icon { color: var(--muted); width: 16px; height: 16px; }
+.template-card p { font-size: 11px; color: var(--muted); margin-top: 7px; }
+.template-actions { display: flex; gap: 12px; }
+.template-actions :deep(.el-button) { font-size: 11px; padding: 5px 0; }
+</style>

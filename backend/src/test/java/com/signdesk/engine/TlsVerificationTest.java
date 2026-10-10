@@ -57,8 +57,25 @@ class TlsVerificationTest {
                         .redirectErrorStream(true)
                         .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                         .start();
-        assertTrue(process.waitFor(15, TimeUnit.SECONDS));
-        assertEquals(0, process.exitValue());
+        // keytool starts a separate JVM and generates an RSA key. This fixture deadline
+        // is independent of the HTTP deadlines and certificate/hostname assertions below.
+        boolean fixtureCreated = false;
+        try {
+            assertTrue(
+                    process.waitFor(60, TimeUnit.SECONDS),
+                    "TLS fixture setup: keytool did not finish within 60 seconds");
+            assertEquals(0, process.exitValue(), "TLS fixture setup: keytool failed");
+            fixtureCreated = true;
+        } finally {
+            if (process.isAlive()) {
+                process.destroyForcibly();
+                process.waitFor(5, TimeUnit.SECONDS);
+            }
+            if (!fixtureCreated && !process.isAlive()) {
+                Files.deleteIfExists(file);
+                Files.deleteIfExists(directory);
+            }
+        }
         KeyStore store = KeyStore.getInstance("PKCS12");
         try (var input = Files.newInputStream(file)) {
             store.load(input, "test-fixture-password".toCharArray());

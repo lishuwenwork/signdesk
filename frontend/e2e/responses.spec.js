@@ -38,8 +38,16 @@ async function run(request, accountId, name, path, options = '') {
   return (await (await request.get(`/api/batches/${batchId}`)).json()).items[0].id
 }
 
-async function openDetail(page, name) {
-  await page.locator('.el-table__row').filter({ hasText: name }).getByRole('button', { name: '详情', exact: true }).click()
+async function openDetail(page, name, { responseTab = true } = {}) {
+  await page.locator('.log-table tbody tr[data-run-id]').filter({ hasText: name })
+    .getByRole('button', { name: '详情', exact: true }).click()
+  const drawer = page.getByRole('dialog', { name: '执行记录详情', exact: true })
+  await expect(drawer).toBeVisible()
+  // Tabs are rendered after detail arrives. A deliberately held response must not block closing.
+  if (responseTab) {
+    await expect(drawer.getByRole('button', { name: '执行信息', exact: true })).toHaveClass(/active/)
+    await drawer.getByRole('button', { name: '响应体', exact: true }).click()
+  }
 }
 async function closeDetail(page) {
   await page.locator('.el-drawer__close-btn').click()
@@ -101,8 +109,8 @@ test('response details show raw text, errors, empty, binary, partial and truncat
   await openDetail(page, '响应原文')
   await expect(page.getByTestId('response-body')).toContainText('响应体 response-fixture-secret')
   const drawer = page.locator('.el-drawer')
-  await expect.poll(async () => Math.round((await drawer.boundingBox()).x)).toBe(680)
-  await expect.poll(async () => Math.round((await drawer.boundingBox()).width)).toBe(760)
+  await expect.poll(async () => Math.round((await drawer.boundingBox()).x)).toBe(870)
+  await expect.poll(async () => Math.round((await drawer.boundingBox()).width)).toBe(570)
   await page.screenshot({ path: info.outputPath('response-detail-desktop.png'), fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
   await expect.poll(async () => Math.round((await drawer.boundingBox()).x)).toBe(0)
@@ -132,7 +140,7 @@ test('closing a detail clears its body and a late response cannot replace anothe
     let listRequests = 0
     page.on('request', (r) => { if (new URL(r.url()).pathname === '/api/runs') listRequests++ })
     await page.goto('/#/runs')
-    await openDetail(page, '迟到的响应')
+    await openDetail(page, '迟到的响应', { responseTab: false })
     await ready
     await closeDetail(page)
     await openDetail(page, '当前空响应')

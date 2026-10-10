@@ -19,4 +19,6 @@ public class RequestVo {
     private Integer version;
     private String safeHost;
     private String method;
+    private String todayState = "none";
+    private LastRunVo lastRun;
 }

@@ -5,6 +5,7 @@ import com.signdesk.common.ApiException;
 import com.signdesk.common.Checks;
 import com.signdesk.converter.*;
 import com.signdesk.domain.*;
+import com.signdesk.domain.model.RequestStatusRow;
 import com.signdesk.domain.bo.PlatformBo;
 import com.signdesk.domain.vo.*;
 import com.signdesk.mapper.*;
@@ -16,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -25,13 +28,15 @@ public class PlatformServiceImpl implements IPlatformService {
     private final PlatformMapper platforms;
     private final AccountMapper accounts;
     private final RequestDefinitionMapper requests;
+    private final RequestStatusQueryMapper requestStatuses;
     private final PlatformScheduleMapper schedules;
     private final CatalogGuard guard;
     private final Clock clock;
 
     @Override
+    @Transactional(readOnly = true)
     public List<PlatformVo> queryList() {
-        // Three bounded queries, independent of the number of tree nodes; no request snapshots.
+        // Four batch queries, independent of tree size; no request/response payloads or summaries.
         var ps =
                 platforms.selectList(
                         new LambdaQueryWrapper<Platform>()
@@ -45,13 +50,28 @@ public class PlatformServiceImpl implements IPlatformService {
                         new LambdaQueryWrapper<RequestDefinition>()
                                 .orderByAsc(
                                         RequestDefinition::getSortOrder, RequestDefinition::getId));
+        var now = clock.instant();
+        var statuses =
+                requestStatuses.queryAll(
+                                now.atZone(ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
+                                now.atZone(ZoneOffset.UTC).toLocalDate().toString())
+                        .stream()
+                        .collect(Collectors.toMap(RequestStatusRow::getRequestId, s -> s));
         var byAccount =
                 rs.stream()
                         .collect(
                                 Collectors.groupingBy(
                                         RequestDefinition::getAccountId,
                                         Collectors.mapping(
-                                                CatalogConverter::request, Collectors.toList())));
+                                                r -> {
+                                                    var vo = CatalogConverter.request(r);
+                                                    var status = statuses.get(r.getId());
+                                                    if (status != null) {
+                                                        vo.setTodayState(status.getTodayState());
+                                                        vo.setLastRun(status.getLastRun());
+                                                    }
+                                                    return vo;
+                                                }, Collectors.toList())));
         var byPlatform =
                 as.stream()
                         .collect(

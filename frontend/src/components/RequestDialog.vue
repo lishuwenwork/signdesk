@@ -1,5 +1,5 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, report, confirm } from '../api'
 import { createRuleDraft, collectRules } from '../resultRules'
@@ -23,13 +23,15 @@ const preview = ref(null),
   templates = ref([]),
   selectedTemplate = ref(''),
   templatesLoading = ref(false),
-  templatesError = ref('')
+  templatesError = ref(''),
+  saveError = ref('')
 let baseline = '', session = 0
+onUnmounted(() => { session++; form.curl = ''; preview.value = null; rules.value = createRuleDraft(); templates.value = [] })
 function signature() {
   return JSON.stringify({ name: form.name, rules: rules.value })
 }
 watch(
-  () => [props.modelValue, props.platformId, props.accountId, props.mode],
+  () => [props.modelValue, props.platformId, props.accountId, props.mode, props.request?.id],
   async ([open]) => {
     const current = ++session
     form.curl = ''
@@ -39,7 +41,8 @@ watch(
     templates.value = []
     templatesLoading.value = false
     templatesError.value = ''
-    rules.value = createRuleDraft(props.request?.rules)
+    saveError.value = ''
+    rules.value = createRuleDraft(open ? props.request?.rules : undefined)
     if (!open) return
     step.value = props.mode === 'rules' ? 2 : 0
     form.name = props.request?.name || '每日签到'
@@ -74,6 +77,7 @@ watch(
       }
     }
   },
+  { flush: 'sync' },
 )
 async function applyTemplate(id) {
   if (!id) {
@@ -94,8 +98,10 @@ const title = computed(
   () => ({ new: '导入完整 cURL', update: '更新 cURL', rules: '编辑名称与结果规则', view: '查看完整请求' })[props.mode],
 )
 async function parse() {
+  if (busy.value) return
   const current = session
   busy.value = true
+  saveError.value = ''
   try {
     const data = await api('/requests/preview', 'POST', { curl: form.curl })
     if (current === session) {
@@ -109,8 +115,11 @@ async function parse() {
   }
 }
 async function save() {
+  if (busy.value) return
+  if (props.mode !== 'update' && !form.name.trim()) return ElMessage.warning('请填写请求名称')
   const current = session
   busy.value = true
+  saveError.value = ''
   try {
     let requestId = props.request?.id
     if (props.mode === 'update')
@@ -139,18 +148,21 @@ async function save() {
     emit('saved', { accountId: props.accountId, requestId, mode: props.mode })
     visible.value = false
   } catch (e) {
-    if (current === session) report(e)
+    if (current === session) {
+      saveError.value = e.status === 409 ? '版本发生冲突。草稿已保留，请关闭后读取最新请求，再决定如何修改；不会覆盖其他页面的更新。' : e.message
+      report(e)
+    }
   } finally {
     if (current === session) busy.value = false
   }
 }
 const bodyText = computed(() => {
   try {
-    return new TextDecoder().decode(
+    return new TextDecoder('utf-8', { fatal: true }).decode(
       Uint8Array.from(atob(preview.value?.spec.bodyBytes || ''), (c) => c.charCodeAt(0)),
     )
   } catch {
-    return ''
+    return `无法按 UTF-8 解码，Base64 原始字节：\n${preview.value?.spec.bodyBytes || ''}`
   }
 })
 </script>
@@ -161,8 +173,9 @@ const bodyText = computed(() => {
       <el-step title="粘贴 cURL" /><el-step title="解析预览" /><el-step title="结果规则" />
     </el-steps>
     <div v-loading="busy">
+      <el-alert v-if="saveError" :title="saveError" type="error" :closable="false" class="space-top" />
       <template v-if="step === 0">
-        <el-form label-position="top">
+        <el-form label-position="top" :disabled="busy">
           <el-form-item v-if="mode === 'new'" label="接口模板（可选）">
             <el-select :model-value="selectedTemplate" @change="applyTemplate" :loading="templatesLoading"
               :disabled="templatesLoading || !templates.length" placeholder="不使用模板，手动填写" aria-label="接口模板（可选）" style="width: 100%">
@@ -208,10 +221,10 @@ const bodyText = computed(() => {
         </div>
       </template>
       <template v-if="step === 2">
-        <el-form label-position="top">
+        <el-form label-position="top" :disabled="busy">
           <el-form-item label="请求名称"><el-input v-model="form.name" maxlength="60" /></el-form-item>
         </el-form>
-        <ResultRulesEditor v-model="rules" />
+        <ResultRulesEditor v-model="rules" :disabled="busy" />
         <div class="dialog-footer">
           <el-button v-if="mode === 'new'" @click="step = 1">上一步</el-button>
           <el-button v-else @click="visible = false">取消</el-button>

@@ -24,6 +24,7 @@ import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.ByteArrayInputStream;
 import java.net.InetSocketAddress;
@@ -88,6 +89,7 @@ class StorageQueueIntegrationTest {
     static final class MutableClock extends Clock {
         private final AtomicReference<Instant> now =
                 new AtomicReference<>(Instant.parse("2026-10-09T00:00:00Z"));
+        private final ThreadLocal<Runnable> instantObserver = new ThreadLocal<>();
 
         void set(Instant value) {
             now.set(value);
@@ -95,6 +97,8 @@ class StorageQueueIntegrationTest {
 
         @Override
         public Instant instant() {
+            var observer = instantObserver.get();
+            if (observer != null) observer.run();
             return now.get();
         }
 
@@ -403,6 +407,198 @@ class StorageQueueIntegrationTest {
         long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
         while (!condition.getAsBoolean() && System.nanoTime() < until) Thread.sleep(30);
         assertTrue(condition.getAsBoolean(), "operation did not finish");
+    }
+
+    RequestVo listedRequest(String id) {
+        return platforms.queryList().stream()
+                .flatMap(p -> p.getAccounts().stream())
+                .flatMap(a -> a.getRequests().stream())
+                .filter(r -> r.getId().equals(id))
+                .findFirst()
+                .orElseThrow();
+    }
+
+    String insertHistory(String p, String r, String status, String createdAt, String finishedAt) {
+        String batch = Ids.next(), item = Ids.next();
+        jdbc.update(
+                "INSERT INTO run_batches(id,platform_id,schedule_revision,business_date,timezone,"
+                        + "source,interval_seconds,status,created_at) VALUES(?,?,1,'2026-10-09',"
+                        + "'Asia/Shanghai','manual',0,'completed',?)",
+                batch, p, createdAt);
+        jdbc.update(
+                "INSERT INTO run_items(id,batch_id,request_id,request_revision,rules_json,ordinal,"
+                        + "status,http_status,duration_ms,safe_summary,finished_at)"
+                        + " VALUES(?,?,?,1,'{}',0,?,207,123,'summary-only-private-fixture',?)",
+                item, batch, r, status, finishedAt);
+        return item;
+    }
+
+    @Test
+    void platformTreeTodayStateUsesClockAndEachPlatformTimezoneWithCompletedPriority() {
+        setup("/ok");
+        String utcPlatform = addPlatform("UTC平台", "", true);
+        var s = schedules.queryById(utcPlatform);
+        schedules.save(utcPlatform, new ScheduleBo(false, "daily", s.weekdays(), s.times(),
+                "UTC", 0, 0, true, s.revision()));
+        String utcRequest = addRequest(addAccount(utcPlatform, "UTC账号", true), "UTC请求",
+                "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        String untouched = addRequest(account, "无日标记", "curl '" + url + "/ok'",
+                ResultRules.defaults(), true);
+        for (String r : List.of(request, utcRequest)) {
+            jdbc.update("INSERT INTO request_day_states VALUES(?,?,1)", r, "2026-10-09");
+            jdbc.update("INSERT INTO request_day_states VALUES(?,?,1)", r, "2026-10-10");
+            jdbc.update("INSERT INTO daily_completions VALUES(?,?,?)", r, "2026-10-10", Ids.next());
+        }
+        jdbc.update("INSERT INTO request_day_states VALUES(?,?,0)", untouched, "2026-10-10");
+        jdbc.update("INSERT INTO daily_completions VALUES(?,?,?)", untouched, "2026-10-08", Ids.next());
+        testClock.set(Instant.parse("2026-10-09T15:59:59Z"));
+        assertEquals("pending", listedRequest(request).getTodayState());
+        assertEquals("pending", listedRequest(utcRequest).getTodayState());
+        testClock.set(Instant.parse("2026-10-09T16:00:00Z"));
+        assertEquals("completed", listedRequest(request).getTodayState());
+        assertEquals("pending", listedRequest(utcRequest).getTodayState());
+        assertEquals("none", listedRequest(untouched).getTodayState());
+        testClock.set(Instant.parse("2026-10-10T00:00:00Z"));
+        assertEquals("completed", listedRequest(utcRequest).getTodayState());
+        assertNull(listedRequest(request).getLastRun());
+        assertNull(listedRequest(utcRequest).getLastRun());
+        assertNull(listedRequest(untouched).getLastRun());
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void platformTreeKeepsIndependentDayMarkersAfterExecutionLogsAndResponsesAreCleared() {
+        setup("/ok");
+        String pending = addRequest(account, "待确认请求", "curl '" + url + "/ok'",
+                ResultRules.defaults(), true);
+        String oldTime = "2026-08-01T00:00:00Z";
+        String completedItem = insertHistory(platform, request, "success", oldTime, oldTime);
+        String unknownItem = insertHistory(platform, pending, "unknown", oldTime, oldTime);
+        jdbc.update("INSERT INTO daily_completions VALUES(?,?,?)", request, "2026-10-09", completedItem);
+        jdbc.update("INSERT INTO request_day_states VALUES(?,?,1)", pending, "2026-10-09");
+        for (String item : List.of(completedItem, unknownItem)) {
+            jdbc.update("INSERT INTO run_responses(run_id,body_bytes,capture_state) VALUES(?,?,'complete')",
+                    item, "response-only-private-fixture".getBytes(StandardCharsets.UTF_8));
+        }
+        assertEquals(completedItem, listedRequest(request).getLastRun().getId());
+        assertEquals(unknownItem, listedRequest(pending).getLastRun().getId());
+        records.clearExpired();
+        assertEquals(0, count("SELECT COUNT(*) FROM run_items"));
+        assertEquals(0, count("SELECT COUNT(*) FROM run_responses"));
+        assertEquals(1, count("SELECT COUNT(*) FROM daily_completions"));
+        assertEquals(1, count("SELECT COUNT(*) FROM request_day_states"));
+        assertEquals("completed", listedRequest(request).getTodayState());
+        assertEquals("pending", listedRequest(pending).getTodayState());
+        assertNull(listedRequest(request).getLastRun());
+        assertNull(listedRequest(pending).getLastRun());
+    }
+
+    @Test
+    void platformTreeLastRunIsDeterministicSafeMetadataAndNeverDerivesDayMarkersFromLogs() {
+        setup("/ok");
+        insertHistory(platform, request, "success", "2026-10-08T00:00:00Z", "2026-10-09T00:05:00Z");
+        String created = "2026-10-09T00:00:00Z";
+        insertHistory(platform, request, "failed", created, "2026-10-09T00:04:00Z");
+        String newest = insertHistory(platform, request, "unknown", created, "2026-10-09T00:01:00Z");
+        // Reverse ID ordering: ties use insertion order (SQLite rowid), not lexical IDs or finish time.
+        jdbc.update("UPDATE run_items SET id='1' WHERE id=?", newest);
+        jdbc.update("INSERT INTO run_responses(run_id,body_bytes,capture_state) VALUES('1',?,'complete')",
+                "response-only-private-fixture".getBytes(StandardCharsets.UTF_8));
+        for (int attempt = 0; attempt < 3; attempt++) {
+            var vo = listedRequest(request);
+            assertEquals("none", vo.getTodayState());
+            var last = vo.getLastRun();
+            assertEquals("1", last.getId());
+            assertEquals("unknown", last.getStatus());
+            assertEquals(created, last.getCreatedAt());
+            assertEquals("2026-10-09T00:01:00Z", last.getFinishedAt());
+            assertEquals(207, last.getHttpStatus());
+            assertEquals(123L, last.getDurationMs());
+            assertEquals(Set.of("id", "status", "finishedAt", "createdAt", "httpStatus", "durationMs"),
+                    Json.map(Json.write(last)).keySet());
+            String json = Json.write(platforms.queryList());
+            assertFalse(json.contains("response-only-private-fixture"));
+            assertFalse(json.contains("summary-only-private-fixture"));
+            assertFalse(json.contains("test-only-credential"));
+            assertFalse(json.contains("bodyBytes"));
+            assertFalse(json.contains("safeSummary"));
+            assertFalse(json.contains("rawCurl"));
+        }
+    }
+
+    @Test
+    void platformTreeLastRunOrdersUtcSecondsAndNanosecondsWithoutTimestampRounding() {
+        setup("/ok");
+        java.util.function.Supplier<List<String>> logOrder = () ->
+                records.queryPageList(platform, null, null, 1, 100).items().stream()
+                        .map(RunLogVo::getId).toList();
+        String millis = insertHistory(platform, request, "success",
+                "2026-10-09T00:00:00.100Z", null);
+        String seconds = insertHistory(platform, request, "failed", "2026-10-09T00:00:00Z", null);
+        assertEquals(millis, listedRequest(request).getLastRun().getId());
+        assertEquals(List.of(millis, seconds), logOrder.get());
+        String micros = insertHistory(platform, request, "success",
+                "2026-10-09T00:00:00.100001Z", null);
+        assertEquals(micros, listedRequest(request).getLastRun().getId());
+        assertEquals(List.of(micros, millis, seconds), logOrder.get());
+        String nanos = insertHistory(platform, request, "success",
+                "2026-10-09T00:00:00.100001002Z", null);
+        String lowerNanos = insertHistory(platform, request, "failed",
+                "2026-10-09T00:00:00.100001001Z", null);
+        String tiedMicros = insertHistory(platform, request, "failed",
+                "2026-10-09T00:00:00.100001Z", null);
+        assertEquals(nanos, listedRequest(request).getLastRun().getId());
+        assertEquals(List.of(nanos, lowerNanos, tiedMicros, micros, millis, seconds), logOrder.get());
+        String tie = insertHistory(platform, request, "unknown",
+                "2026-10-09T00:00:00.100001002Z", null);
+        assertEquals(tie, listedRequest(request).getLastRun().getId());
+        assertEquals(List.of(tie, nanos, lowerNanos, tiedMicros, micros, millis, seconds), logOrder.get());
+        String nextSecond = insertHistory(platform, request, "success",
+                "2026-10-09T00:00:01Z", null);
+        String previousSecond = insertHistory(platform, request, "failed",
+                "2026-10-09T00:00:00.999999999Z", null);
+        assertEquals(nextSecond, listedRequest(request).getLastRun().getId());
+        assertEquals(List.of(nextSecond, previousSecond, tie, nanos, lowerNanos, tiedMicros,
+                micros, millis, seconds), logOrder.get());
+        assertEquals("2026-10-09T00:00:01Z", listedRequest(request).getLastRun().getCreatedAt());
+
+        // The real SQLite plan uses each request's existing index range. It still scans that
+        // request's retained history, but must not materialize a full-history window result.
+        var statement = sqlSession.getConfiguration().getMappedStatement(
+                "com.signdesk.mapper.RequestStatusQueryMapper.queryAll");
+        var sql = statement.getBoundSql(Map.of(
+                "shanghaiDate", "2026-10-09", "utcDate", "2026-10-09")).getSql();
+        var plan = jdbc.query("EXPLAIN QUERY PLAN " + sql,
+                (row, index) -> row.getString("detail"), "2026-10-09", "2026-10-09");
+        assertTrue(plan.stream().anyMatch(line -> line.contains(
+                "SEARCH candidate USING INDEX items_request")), plan.toString());
+        assertTrue(plan.stream().anyMatch(line -> line.contains(
+                "CORRELATED SCALAR SUBQUERY")), plan.toString());
+        assertFalse(plan.stream().anyMatch(line -> line.contains("MATERIALIZE")
+                || line.contains("CO-ROUTINE")), plan.toString());
+    }
+
+    @Test
+    void platformTreeQueryRunsInsideReadOnlyTransactionAndReleasesItAfterReturning() {
+        setup("/ok");
+        assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+        var observed = new AtomicInteger();
+        // Observe the actual proxied service call, not merely the annotation metadata. A
+        // thread-local probe ignores unrelated scheduler/worker Clock calls.
+        testClock.instantObserver.set(() -> {
+            observed.incrementAndGet();
+            assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
+            assertTrue(TransactionSynchronizationManager.isCurrentTransactionReadOnly());
+            assertTrue(TransactionSynchronizationManager.hasResource(jdbc.getDataSource()));
+        });
+        try {
+            assertEquals(request, listedRequest(request).getId());
+        } finally {
+            testClock.instantObserver.remove();
+        }
+        assertEquals(1, observed.get());
+        assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+        assertFalse(TransactionSynchronizationManager.hasResource(jdbc.getDataSource()));
     }
 
     BackupFile config(boolean include) {

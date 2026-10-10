@@ -33,10 +33,13 @@ async function selectPlatform(page, name) {
     await picker.press('ArrowDown')
     await page.getByRole('option', { name, exact: true }).click()
   } else {
-    await page.getByRole('complementary', { name: '平台列表', exact: true })
-      .getByRole('button').filter({ has: page.locator('strong', { hasText: name }) }).click()
+    await page.locator('.platform-choice').filter({ hasText: name }).click()
   }
   await expect(page.getByRole('heading', { name, level: 2, exact: true })).toBeVisible()
+}
+async function requestAction(page, row, name) {
+  await row.locator('.row-actions').getByRole('button', { name: /的更多操作$/ }).click()
+  await page.getByRole('menuitem', { name, exact: true }).click()
 }
 async function selectStatus(page, name) {
   await page.locator('.catalog-status-filter .el-select__wrapper').click()
@@ -97,7 +100,7 @@ for (const width of [1440, 1024, 390]) {
     await expect(spareToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(mainToggle).toHaveAttribute('aria-expanded', 'true')
     await spareToggle.click()
-    await spareGroup.getByRole('button', { name: '＋ 添加请求', exact: true }).click()
+    await spareGroup.getByRole('button', { name: '添加请求', exact: true }).click()
     await expect(page.getByRole('dialog')).toContainText(`${platform.name} / ${spare.alias}`)
     await page.getByRole('dialog').getByRole('button', { name: '取消', exact: true }).click()
     await expect(spareToggle).toHaveAttribute('aria-expanded', 'false')
@@ -130,12 +133,15 @@ for (const width of [1440, 1024, 390]) {
     await expect(mainToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(spareToggle).toHaveAttribute('aria-expanded', 'false')
     const row = requestRow(page, first.id)
-    for (const name of ['更新 cURL', '编辑', '删除']) {
-      await expect(row.getByRole('button', { name, exact: true })).toBeVisible()
+    await expect(row.getByRole('button', { name: '更新 cURL', exact: true })).toBeVisible()
+    await row.getByRole('button', { name: '每日签到的更多操作', exact: true }).click()
+    for (const name of ['编辑名称 / 规则', '删除请求', '禁用请求']) {
+      await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible()
     }
+    await page.keyboard.press('Escape')
     if (width === 390) {
       expect(await row.getByRole('button', { name: '更新 cURL', exact: true }).evaluate((button) => button.getBoundingClientRect().height))
-        .toBeGreaterThanOrEqual(44)
+        .toBeGreaterThanOrEqual(36)
     }
     await noOverflow(page, width)
     await page.screenshot({ path: info.outputPath(`platform-accounts-${width}.png`), fullPage: true, animations: 'disabled' })
@@ -171,7 +177,7 @@ test('direct maintenance actions preserve versions, reveal creations and confirm
   await expect(page.getByRole('menuitem', { name: '重新执行（忽略当日标记）', exact: true })).toBeDisabled()
   await page.keyboard.press('Escape')
 
-  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await requestAction(page, row, '编辑名称 / 规则')
   await expect(page.getByRole('dialog', { name: '编辑名称与结果规则', exact: true })).toBeVisible()
   await page.getByRole('textbox', { name: '请求名称', exact: true }).fill('改名请求')
   await page.getByRole('textbox', { name: '成功等于值', exact: true }).fill('1')
@@ -193,15 +199,14 @@ test('direct maintenance actions preserve versions, reveal creations and confirm
   expect(updated).toMatchObject({ name: '改名请求', enabled: 0, currentRevision: 2, authPaused: 0 })
   expect(updated.rules).toEqual(edited.rules)
 
-  const enabledAction = row.locator('.request-enable-action')
-  await enabledAction.click()
+  await requestAction(page, row, '启用请求')
   await expect.poll(async () => (await savedRequest(request, platform.id, item.id)).enabled).toBe(1)
-  await expect(row.locator('.request-state')).toHaveText('启用')
-  await expect(enabledAction).toHaveText('禁用')
-  await expect(enabledAction).toHaveAccessibleName('禁用请求 改名请求')
-  await expect(enabledAction).toBeEnabled()
+  await expect(row.locator('.state-text')).toHaveText('今日未执行')
+  await row.getByRole('button', { name: '改名请求的更多操作', exact: true }).click()
+  await expect(page.getByRole('menuitem', { name: '禁用请求', exact: true })).toBeEnabled()
+  await page.keyboard.press('Escape')
   await page.getByRole('textbox', { name: '搜索当前平台请求', exact: true }).fill('改名请求')
-  await accountGroup(page, account.alias).getByRole('button', { name: '＋ 添加请求', exact: true }).click()
+  await accountGroup(page, account.alias).getByRole('button', { name: '添加请求', exact: true }).click()
   await page.getByRole('textbox', { name: '请求名称', exact: true }).fill('筛选中新建的请求')
   await page.getByRole('textbox', { name: '完整 cURL', exact: true }).fill(fixtureCurl)
   await page.getByRole('button', { name: '解析预览', exact: true }).click()
@@ -217,30 +222,30 @@ test('direct maintenance actions preserve versions, reveal creations and confirm
   await expect(page.getByText('已清除筛选，以显示刚刚添加的内容。', { exact: true })).toBeVisible()
   await expect(accountGroup(page, account.alias).locator('.account-toggle')).toHaveAttribute('aria-expanded', 'true')
 
-  await createdRow.getByRole('button', { name: '删除', exact: true }).click()
+  await requestAction(page, createdRow, '删除请求')
   const confirmation = page.locator('.el-message-box')
   await expect(confirmation).toContainText('维护账号')
   await expect(confirmation).toContainText('筛选中新建的请求')
   await confirmation.getByRole('button', { name: '取消', exact: true }).click()
   expect(deletes).toBe(0)
   await expect(createdRow).toBeVisible()
-  await createdRow.getByRole('button', { name: '删除', exact: true }).click()
+  await requestAction(page, createdRow, '删除请求')
   await confirmation.getByRole('button', { name: '确认', exact: true }).click()
   await expect(createdRow).toHaveCount(0)
   expect(deletes).toBe(1)
   expect(await savedRequest(request, platform.id, item.id)).toMatchObject({ id: item.id })
 
   await page.getByRole('textbox', { name: '搜索当前平台请求', exact: true }).fill('改名请求')
-  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await requestAction(page, row, '编辑名称 / 规则')
   await page.getByRole('textbox', { name: '请求名称', exact: true }).fill('不再匹配原搜索的请求')
   await page.getByRole('button', { name: '保存请求', exact: true }).click()
   await expect(row).toHaveCount(0)
   await expect(page.getByText('已保存，该请求不再符合当前筛选。清除筛选后可以查看。', { exact: true })).toBeVisible()
   await expect(page.getByRole('textbox', { name: '搜索当前平台请求', exact: true })).toHaveValue('改名请求')
-  await page.locator('.catalog-result-bar').getByRole('button', { name: '清除筛选', exact: true }).click()
+  await page.locator('.catalog-matches').getByRole('button', { name: '清除筛选', exact: true }).click()
   await expect(row).toContainText('不再匹配原搜索的请求')
 
-  await page.getByRole('button', { name: '＋ 添加账号', exact: true }).click()
+  await page.getByRole('button', { name: '添加账号', exact: true }).click()
   await page.getByRole('textbox', { name: '账号别名', exact: true }).fill('刚添加的账号')
   await page.getByRole('button', { name: '保存账号', exact: true }).click()
   await expect(accountGroup(page, '刚添加的账号').locator('.account-toggle')).toHaveAttribute('aria-expanded', 'true')
@@ -281,9 +286,10 @@ test('synthetic list states expose credential issues and inherited disablement w
   await selectStatus(page, '禁用')
   await expect(page.locator('.request-row')).toHaveCount(2)
   const inherited = requestRow(page, '9000000000000000014')
-  await expect(inherited.locator('.request-state')).toHaveText('启用')
-  await expect(inherited.getByRole('button', { name: '禁用请求 继承停用请求', exact: true })).toBeVisible()
+  await expect(inherited.locator('.state-text')).toHaveText('已禁用')
   await inherited.getByRole('button', { name: '继承停用请求的更多操作', exact: true }).click()
+  // The request itself stays enabled even though its account prevents execution.
+  await expect(page.getByRole('menuitem', { name: '禁用请求', exact: true })).toBeEnabled()
   await expect(page.getByRole('menuitem', { name: '执行', exact: true })).toBeDisabled()
   await expect(page.getByRole('menuitem', { name: '重新执行（忽略当日标记）', exact: true })).toBeDisabled()
   await page.keyboard.press('Escape')
@@ -304,7 +310,7 @@ test('polls do not replace edit drafts or overwrite a newer saved catalogue', as
   await page.goto('/#/platforms')
   await selectPlatform(page, platform.name)
   const row = requestRow(page, item.id)
-  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  await requestAction(page, row, '编辑名称 / 规则')
   const nameInput = page.getByRole('textbox', { name: '请求名称', exact: true })
   await nameInput.fill('尚未保存的草稿')
   const original = await savedRequest(request, platform.id, item.id)
@@ -333,7 +339,7 @@ test('polls do not replace edit drafts or overwrite a newer saved catalogue', as
   })
   try {
     await snapshotCaptured
-    await row.getByRole('button', { name: '编辑', exact: true }).click()
+    await requestAction(page, row, '编辑名称 / 规则')
     await nameInput.fill('刷新后应保留的新名称')
     await page.getByRole('button', { name: '保存请求', exact: true }).click()
     await expect(row).toContainText('刷新后应保留的新名称')

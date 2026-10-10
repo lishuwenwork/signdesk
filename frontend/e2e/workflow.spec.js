@@ -46,10 +46,13 @@ async function previewBackup(page, filename, backup) {
 
 async function restoreBackup(page, backup) {
   await page.getByRole('button', { name: '确认替换并恢复', exact: true }).click()
-  const confirmation = page.locator('.el-message-box')
-  await expect(confirmation).toContainText('替换全部配置，不是合并导入')
+  const confirmation = page.getByRole('dialog', { name: '确认整体替换配置', exact: true })
+  await expect(confirmation).toContainText('不是合并')
+  const confirmReplace = confirmation.getByRole('button', { name: '确认整体替换', exact: true })
+  await expect(confirmReplace).toBeDisabled()
+  await confirmation.getByRole('checkbox', { name: '我理解这是整体替换，而不是合并', exact: true }).check()
   const importRequest = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/backups/import')
-  await confirmation.getByRole('button', { name: '确认', exact: true }).click()
+  await confirmReplace.click()
   expect((await importRequest).postDataJSON()).toEqual({ backup, replace: true })
   await expect(page.getByText('配置已恢复，定时保持暂停，请检查后恢复', { exact: true }).last()).toBeVisible()
   await expect(page.getByRole('button', { name: '确认替换并恢复', exact: true })).toHaveCount(0)
@@ -64,17 +67,17 @@ test('manage, import, send, update, schedule, and export through the real web UI
   const receivedBefore = (await (await request.get('http://127.0.0.1:18081/received')).json()).length
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto('/#/platforms')
-  await page.getByRole('button', { name: '＋ 新增平台' }).click()
+  await page.getByRole('button', { name: '新增平台', exact: true }).last().click()
   await page.getByPlaceholder('例如：平台 A').fill('回显测试平台')
   await page.getByRole('button', { name: '保存平台', exact: true }).click()
   await expect(page.getByRole('heading', { name: '回显测试平台' })).toBeVisible()
   const platform = (await (await request.get('/api/platforms')).json()).find((p) => p.name === '回显测试平台')
   createdPlatforms.add(platform.id)
-  await page.getByRole('button', { name: '＋ 添加账号' }).click()
+  await page.locator('.accounts-heading').getByRole('button', { name: '添加账号', exact: true }).click()
   await page.getByPlaceholder('例如：主账号').fill('测试账号 A')
   await page.getByRole('button', { name: '保存账号', exact: true }).click()
   const accountGroup = page.getByRole('region', { name: '账号 测试账号 A', exact: true })
-  await accountGroup.getByRole('button', { name: '＋ 添加请求', exact: true }).click()
+  await accountGroup.getByRole('button', { name: '添加请求', exact: true }).click()
   await page
     .getByRole('textbox', { name: '完整 cURL', exact: true })
     .fill(
@@ -91,7 +94,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await requestRow.getByRole('button', { name: '每日签到的更多操作', exact: true }).click()
   await page.getByRole('menuitem', { name: '执行', exact: true }).click()
   await page.getByRole('link', { name: '执行记录', exact: true }).click()
-  await expect(page.locator('.el-table__body-wrapper')).toContainText('成功')
+  await expect(page.locator('.log-table tbody')).toContainText('成功')
   const received = await (await request.get('http://127.0.0.1:18081/received')).json()
   expect(received[receivedBefore]).toMatchObject({
     url: '/check?a=%2f&x=1&x=2',
@@ -102,6 +105,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
   })
   await page.getByRole('button', { name: '详情' }).first().click()
   await expect(page.locator('.el-drawer')).toContainText('命中成功规则')
+  await page.locator('.el-drawer').getByRole('button', { name: '响应体', exact: true }).click()
   await expect(page.getByTestId('response-body')).toHaveText('{"code":0}')
   await page.locator('.el-drawer__close-btn').click()
   await expect(page.getByTestId('response-body')).toHaveCount(0)
@@ -120,17 +124,19 @@ test('manage, import, send, update, schedule, and export through the real web UI
     .poll(async () => (await (await request.get('http://127.0.0.1:18081/received')).json()).length)
     .toBe(receivedBefore + 2)
   await page.getByRole('link', { name: '定时计划', exact: true }).click()
-  await page.getByRole('button', { name: '编辑', exact: true }).click()
-  await page.getByRole('dialog').locator('.el-switch').first().click()
+  const plan = page.locator(`.plan-card[data-plan-id="${platform.id}"]`)
+  await plan.getByRole('button', { name: '编辑计划', exact: true }).click()
+  await page.getByRole('dialog', { name: '编辑平台计划', exact: true }).locator('.el-switch').first().click()
   await page.getByRole('button', { name: '保存计划', exact: true }).click()
-  await expect(page.locator('.el-table__body-wrapper')).toContainText('09:00')
+  await expect(plan).toContainText('09:00')
   const plans = await (await request.get('/api/schedules')).json()
-  expect(plans[0].spec.enabled).toBe(true)
+  expect(plans.find((item) => item.platformId === platform.id).spec.enabled).toBe(true)
   await expect.poll(async () => {
     const logs = await (await request.get('/api/runs')).json()
     return logs.items.some((item) => ['queued', 'running'].includes(item.status))
   }).toBe(false)
   await page.getByRole('link', { name: '设置与备份', exact: true }).click()
+  await page.goto('/#/settings?tab=backup')
   const includeRequests = page.getByRole('checkbox', { name: '包含完整请求（明文，可能含凭证）' })
   await expect(includeRequests).not.toBeChecked()
   await expect(page.locator('input[type="password"]')).toHaveCount(0)
@@ -161,7 +167,8 @@ test('manage, import, send, update, schedule, and export through the real web UI
   page.on('request', (r) => { if (new URL(r.url()).pathname === '/api/backups/import') importRequests++ })
   const savedRequest = (await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests[0]
   await page.getByRole('button', { name: '确认替换并恢复', exact: true }).click()
-  await page.locator('.el-message-box').getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByRole('dialog', { name: '确认整体替换配置', exact: true })
+    .getByRole('button', { name: '取消', exact: true }).click()
   expect(importRequests).toBe(0)
   expect((await (await request.get('/api/platforms')).json()).find((p) => p.id === platform.id).accounts[0].requests[0].currentRevision).toBe(2)
   const receivedBeforeImport = (await (await request.get('http://127.0.0.1:18081/received')).json()).length
@@ -212,7 +219,7 @@ test('manage, import, send, update, schedule, and export through the real web UI
 })
 
 test('legacy encrypted and old config files are explicitly unsupported', async ({ page, request }) => {
-  await page.goto('/#/settings')
+  await page.goto('/#/settings?tab=backup')
   let previewRequests = 0
   page.on('request', (r) => { if (new URL(r.url()).pathname === '/api/backups/preview') previewRequests++ })
   for (const format of ['signdesk-backup-v1', 'signdesk-config']) {
@@ -246,9 +253,8 @@ test('write boundaries reject cross-site and form requests without adding login'
 
 test('saved HTTP proxy survives page reload and routes the next execution', async ({ page, request }) => {
   const previous = await (await request.get('/api/settings')).json()
-  await page.goto('/#/settings')
-  await page.getByRole('combobox', { name: '请求代理模式' }).press('ArrowDown')
-  await page.getByRole('option', { name: 'HTTP 代理', exact: true }).click()
+  await page.goto('/#/settings?tab=proxy')
+  await page.getByRole('radio', { name: /HTTP 代理/ }).check()
   await page.getByRole('textbox', { name: '代理主机', exact: true }).fill('127.0.0.1')
   await page.getByRole('spinbutton', { name: '代理端口', exact: true }).fill('18081')
   await page.getByRole('button', { name: '保存设置', exact: true }).click()

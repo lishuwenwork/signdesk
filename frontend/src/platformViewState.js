@@ -1,5 +1,5 @@
 export function needsAttention(request) {
-  return !request.safeHost || !!request.authPaused
+  return !request.safeHost || !!request.authPaused || request.todayState === 'pending'
 }
 
 export function isRequestDisabled(request, accountEnabled, platformEnabled) {
@@ -7,7 +7,8 @@ export function isRequestDisabled(request, accountEnabled, platformEnabled) {
 }
 
 export function canExecuteRequest(request, accountEnabled, platformEnabled) {
-  return !isRequestDisabled(request, accountEnabled, platformEnabled) && !request.authPaused
+  return !isRequestDisabled(request, accountEnabled, platformEnabled) && !!request.safeHost && !request.authPaused
+    && !['queued', 'running'].includes(request.lastRun?.status)
 }
 
 export function requestCounts(requests) {
@@ -23,7 +24,8 @@ export function filterAccounts(platform, keyword = '', status = 'all') {
       const matchesText = matchesAccount || request.name.toLowerCase().includes(query)
         || request.safeHost.toLowerCase().includes(query)
       const matchesStatus = status === 'attention' ? needsAttention(request)
-        : status === 'disabled' ? isRequestDisabled(request, account.enabled, platform.enabled) : true
+        : status === 'disabled' ? isRequestDisabled(request, account.enabled, platform.enabled)
+          : status === 'completed' ? request.todayState === 'completed' : true
       return matchesText && matchesStatus
     })
     const emptyAccountMatches = !account.requests.length && matchesAccount && status === 'all'

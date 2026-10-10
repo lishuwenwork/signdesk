@@ -221,6 +221,18 @@ class WebContractIntegrationTest {
             assertFalse(logs.body().contains("api-response-only-secret"));
             for (var entry : Json.tree(logs.body()).path("items"))
                 assertTrue(entry.path("response").isMissingNode());
+            var platformTree = call("GET", "/platforms", null);
+            assertEquals(200, platformTree.statusCode());
+            assertFalse(platformTree.body().contains("api-response-only-secret"));
+            var requestVo = Json.tree(platformTree.body()).valueStream()
+                    .filter(p -> p.path("id").asString().equals(platform))
+                    .findFirst().orElseThrow().path("accounts").get(0).path("requests").get(0);
+            assertEquals("completed", requestVo.path("todayState").asString());
+            var lastRun = requestVo.path("lastRun");
+            assertEquals(item, lastRun.path("id").asString());
+            assertEquals(200, lastRun.path("httpStatus").asInt());
+            assertEquals(java.util.Set.of("id", "status", "finishedAt", "createdAt", "httpStatus", "durationMs"),
+                    Json.map(lastRun.toString()).keySet());
         } finally {
             fixture.stop(0);
         }
@@ -345,6 +357,11 @@ class WebContractIntegrationTest {
             assertEquals(200, tree.statusCode());
             assertFalse(tree.body().contains("fixture-api-secret"));
             assertFalse(tree.body().contains("rawCurl"));
+            var nestedRequest = Json.tree(tree.body()).valueStream()
+                    .filter(p -> p.path("id").asString().equals(platform))
+                    .findFirst().orElseThrow().path("accounts").get(0).path("requests").get(0);
+            assertEquals("none", nestedRequest.path("todayState").asString());
+            assertTrue(nestedRequest.path("lastRun").isNull());
             var revision = call("GET", "/requests/" + request + "/revision", null);
             assertEquals(200, revision.statusCode());
             assertEquals(java.util.Set.of("rawCurl", "spec"), Json.map(revision.body()).keySet());

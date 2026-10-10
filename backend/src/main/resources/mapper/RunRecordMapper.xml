@@ -22,7 +22,10 @@
   <select id="countLogs" resultType="long">SELECT COUNT(*) <include refid="logJoin"/> <include refid="filters"/></select>
   <select id="queryLogs" resultType="com.signdesk.domain.vo.RunLogVo">
     SELECT <include refid="detailColumns"/>,p.name AS platform_name,a.alias,r.name AS request_name
-    <include refid="logJoin"/> <include refid="filters"/> ORDER BY b.created_at DESC,i.rowid DESC LIMIT #{size} OFFSET #{offset}
+    <include refid="logJoin"/> <include refid="filters"/>
+    ORDER BY substr(b.created_at,1,19) DESC,
+             substr(replace(substr(b.created_at,21),'Z','') || '000000000',1,9) DESC,
+             i.rowid DESC LIMIT #{size} OFFSET #{offset}
   </select>
   <delete id="clearExpired">DELETE FROM run_items WHERE finished_at IS NOT NULL AND finished_at &lt; #{before} AND status NOT IN('queued','running')</delete>
 </mapper>

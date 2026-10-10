@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.signdesk.mapper.RequestStatusQueryMapper">
+  <resultMap id="requestStatus" type="com.signdesk.domain.model.RequestStatusRow">
+    <id property="requestId" column="request_id"/>
+    <result property="todayState" column="today_state"/>
+    <association property="lastRun" javaType="com.signdesk.domain.vo.LastRunVo" notNullColumn="last_run_id">
+      <id property="id" column="last_run_id"/>
+      <result property="status" column="status"/>
+      <result property="finishedAt" column="finished_at"/>
+      <result property="createdAt" column="created_at"/>
+      <result property="httpStatus" column="http_status"/>
+      <result property="durationMs" column="duration_ms"/>
+    </association>
+  </resultMap>
+  <select id="queryAll" resultMap="requestStatus">
+    WITH request_dates AS (
+      SELECT r.id AS request_id,
+             CASE WHEN s.timezone='UTC' THEN #{utcDate} ELSE #{shanghaiDate} END AS business_date
+      FROM requests r JOIN accounts a ON a.id=r.account_id
+      LEFT JOIN platform_schedules s ON s.platform_id=a.platform_id
+    )
+    SELECT d.request_id,
+           CASE WHEN c.request_id IS NOT NULL THEN 'completed'
+                WHEN p.unknown_pending=1 THEN 'pending' ELSE 'none' END AS today_state,
+           l.id AS last_run_id,l.status,l.finished_at,b.created_at,l.http_status,l.duration_ms
+    FROM request_dates d
+    LEFT JOIN daily_completions c ON c.request_id=d.request_id AND c.business_date=d.business_date
+    LEFT JOIN request_day_states p ON p.request_id=d.request_id AND p.business_date=d.business_date
+    LEFT JOIN run_items l ON l.id=(
+      SELECT candidate.id
+      FROM run_items candidate JOIN run_batches batch ON batch.id=candidate.batch_id
+      WHERE candidate.request_id=d.request_id
+      <!-- Instant.toString() has variable fractional precision. Pad to nine digits, without
+           rounding to milliseconds; SQLite rowid breaks exact timestamp ties. -->
+      ORDER BY substr(batch.created_at,1,19) DESC,
+               substr(replace(substr(batch.created_at,21),'Z','') || '000000000',1,9) DESC,
+               candidate.rowid DESC
+      LIMIT 1
+    )
+    LEFT JOIN run_batches b ON b.id=l.batch_id
+  </select>
+</mapper>
