@@ -9,6 +9,7 @@ const props = defineProps({
   modelValue: Boolean,
   platformId: String,
   accountId: String,
+  contextLabel: String,
   request: Object,
   mode: { type: String, default: 'new' },
 })
@@ -90,7 +91,7 @@ async function applyTemplate(id) {
   baseline = signature()
 }
 const title = computed(
-  () => ({ new: '导入完整 cURL', update: '更新 cURL', rules: '编辑请求与结果规则', view: '查看完整请求' })[props.mode],
+  () => ({ new: '导入完整 cURL', update: '更新 cURL', rules: '编辑名称与结果规则', view: '查看完整请求' })[props.mode],
 )
 async function parse() {
   const current = session
@@ -111,6 +112,7 @@ async function save() {
   const current = session
   busy.value = true
   try {
+    let requestId = props.request?.id
     if (props.mode === 'update')
       await api(`/requests/${props.request.id}/revisions`, 'POST', {
         curl: form.curl,
@@ -123,16 +125,18 @@ async function save() {
         rules: collectRules(rules.value),
         version: props.request.version,
       })
-    else
-      await api(`/accounts/${props.accountId}/requests`, 'POST', {
+    else {
+      const result = await api(`/accounts/${props.accountId}/requests`, 'POST', {
         name: form.name,
         curl: form.curl,
         enabled: form.enabled,
         rules: collectRules(rules.value),
       })
+      requestId = result.id
+    }
     if (current !== session) return
     ElMessage.success(props.mode === 'update' ? '请求版本已更新，凭证暂停已解除' : '请求已保存')
-    emit('saved')
+    emit('saved', { accountId: props.accountId, requestId, mode: props.mode })
     visible.value = false
   } catch (e) {
     if (current === session) report(e)
@@ -152,6 +156,7 @@ const bodyText = computed(() => {
 </script>
 <template>
   <el-dialog v-model="visible" :title="title" width="730px" destroy-on-close :close-on-click-modal="false">
+    <p v-if="contextLabel" class="muted" style="margin: 0 0 16px; overflow-wrap: anywhere">{{ contextLabel }}</p>
     <el-steps v-if="mode === 'new'" :active="step" simple class="space-top" style="margin-bottom: 25px">
       <el-step title="粘贴 cURL" /><el-step title="解析预览" /><el-step title="结果规则" />
     </el-steps>

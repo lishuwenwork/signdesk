@@ -23,10 +23,7 @@ async function cancel(id) {
 </script>
 <template>
   <div class="page-heading">
-    <div>
-      <h1>让每天的签到，准时发生。</h1>
-      <div class="muted">完整请求，一处管理。定时和执行由服务器负责。</div>
-    </div>
+    <h1>今日概览</h1>
     <el-button type="primary" @click="execute('all')">执行全部平台</el-button>
   </div>
   <el-alert v-if="error" :title="error" type="error" :closable="false" class="space-top" />

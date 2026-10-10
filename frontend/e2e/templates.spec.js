@@ -64,7 +64,8 @@ test('platform rule templates fill requests without copying credentials or linki
     await page.setViewportSize({ width: 1440, height: 1000 })
     await dialog.getByRole('button', { name: '关闭', exact: true }).click()
 
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 模板账号 A', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     const curl = `curl 'http://127.0.0.1:18081/check?template=%2f&x=1&x=2' -H 'Cookie: template-account=A' --data-raw '{"from":"own-account"}'`
     await page.getByRole('textbox', { name: '完整 cURL', exact: true }).fill(curl)
     await expect(page.getByRole('combobox', { name: '接口模板（可选）' })).toBeEnabled()
@@ -103,7 +104,8 @@ test('platform rule templates fill requests without copying credentials or linki
       url: '/check?template=%2f&x=1&x=2', cookie: 'template-account=A', body: '{"from":"own-account"}',
     })
 
-    await page.getByRole('button', { name: '更多 ▾' }).click()
+    await page.getByRole('group', { name: '请求 领奖接口', exact: true })
+      .getByRole('button', { name: '领奖接口的更多操作', exact: true }).click()
     await page.getByText('保存为接口模板', { exact: true }).click()
     dialog = page.getByRole('dialog')
     await expect(dialog.getByRole('textbox', { name: '成功字段路径', exact: true })).toHaveValue('')
@@ -122,15 +124,18 @@ test('platform rule templates fill requests without copying credentials or linki
     const updatedTree = await (await request.get('/api/platforms')).json()
     expect(updatedTree.find((p) => p.id === platform.id).accounts[0].requests[0].rules).toEqual(saved.rules)
 
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 模板账号 A', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await chooseTemplate(page, '领奖副本')
     await page.getByRole('button', { name: '取消', exact: true }).click()
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 模板账号 A', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await expect(page.getByRole('textbox', { name: '请求名称', exact: true })).toHaveValue('每日签到')
     await expect(page.getByRole('textbox', { name: '完整 cURL', exact: true })).toHaveValue('')
     await page.getByRole('button', { name: '取消', exact: true }).click()
     await page.locator('.platform-choice').filter({ hasText: '另一个模板平台' }).click()
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 模板账号 B', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await expect(page.getByRole('combobox', { name: '接口模板（可选）' })).toBeDisabled()
     await page.getByRole('button', { name: '取消', exact: true }).click()
 
@@ -171,11 +176,13 @@ test('a late template response cannot populate another platform and fetch errors
   try {
     await page.goto('/#/platforms')
     await page.locator('.platform-choice').filter({ hasText: '延迟响应平台' }).click()
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 延迟账号', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await expect(page.getByRole('combobox', { name: '接口模板（可选）' })).toBeDisabled()
     await page.getByRole('button', { name: '取消', exact: true }).click()
     await page.locator('.platform-choice').filter({ hasText: '当前响应平台' }).click()
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 当前账号', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await expect(page.getByRole('combobox', { name: '接口模板（可选）' })).toBeEnabled()
     release()
     await done
@@ -187,7 +194,8 @@ test('a late template response cannot populate another platform and fetch errors
     await page.keyboard.press('Escape')
     await page.getByRole('button', { name: '取消', exact: true }).click()
     await page.route(`**/api/platforms/${second.id}/templates`, (route) => route.abort())
-    await page.getByRole('button', { name: '＋ 添加请求' }).click()
+    await page.getByRole('region', { name: '账号 当前账号', exact: true })
+      .getByRole('button', { name: '＋ 添加请求', exact: true }).click()
     await expect(page.getByRole('dialog')).toContainText('仍可手动填写')
     await page.getByRole('textbox', { name: '完整 cURL', exact: true }).fill("curl 'http://127.0.0.1:18081/check'")
     await page.getByRole('button', { name: '解析预览' }).click()

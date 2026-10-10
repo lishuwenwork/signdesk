@@ -14,7 +14,11 @@ export async function api(path, method = 'GET', body) {
   } catch {
     throw new Error('服务响应无法读取，请检查后端是否运行')
   }
-  if (!response.ok) throw new Error(data.message || `服务返回 ${response.status}`)
+  if (!response.ok) {
+    const error = new Error(data.message || `服务返回 ${response.status}`)
+    error.status = response.status
+    throw error
+  }
   return data
 }
 export function report(error) {

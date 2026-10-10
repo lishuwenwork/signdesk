@@ -113,10 +113,7 @@ async function importBackup() {
 </script>
 <template>
   <div class="page-heading">
-    <div>
-      <h1>设置与备份</h1>
-      <div class="muted">配置保存在服务器，运行数据独立于程序包。</div>
-    </div>
+    <h1>设置与备份</h1>
   </div>
   <div class="setting-layout">
     <section class="panel">
@@ -193,7 +190,7 @@ async function importBackup() {
     </div>
   </div>
   <div class="inline-info">
-    正式系统默认监听本机，没有应用登录。远程访问请使用自己的私有入口。前端页面关闭不影响服务器任务；停止
+    配置保存在服务器，运行数据独立于程序包。正式系统默认监听本机，没有应用登录。远程访问请使用自己的私有入口。前端页面关闭不影响服务器任务；停止
     Spring Boot 服务后，任务也会停止。
   </div>
 </template>

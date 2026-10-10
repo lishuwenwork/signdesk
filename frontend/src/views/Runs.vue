@@ -68,10 +68,7 @@ async function show(row) {
 </script>
 <template>
   <div class="page-heading">
-    <div>
-      <h1>每一次执行，都有记录。</h1>
-      <div class="muted">业务结果单独判断，不将 HTTP 200 直接视为成功。</div>
-    </div>
+    <h1>执行记录</h1>
     <el-button @click="load">刷新记录</el-button>
   </div>
   <el-alert v-if="error" :title="error" type="error" :closable="false" style="margin-bottom: 20px" />
@@ -84,6 +81,9 @@ async function show(row) {
       ><el-select v-model="filter.source" placeholder="全部来源" clearable @change="changeFilter"
         ><el-option label="手动执行" value="manual" /><el-option label="定时执行" value="auto"
       /></el-select>
+    </div>
+    <div class="muted small" style="margin-bottom: 12px">
+      业务结果单独判断，不将 HTTP 200 直接视为成功。
     </div>
     <el-table :data="data.items" empty-text="暂无符合条件的执行记录"
       ><el-table-column label="平台 / 账号" min-width="140"
