@@ -179,3 +179,20 @@ Playwright 只正确完成 `--list` 清单收集：识别 **8 项、3 个测试�
 - 弹窗间距根因为全局相邻按钮 margin 已归零，但若干 footer 仍依靠内联排布、没有 gap。全局样式为 Dialog、Drawer 和 MessageBox 操作区补统一 `flex + gap` 与换行，嵌套抽屉按钮组及请求向导操作区同样支持换行，并仅在 footer 内清除默认按钮左 margin，避免双重间距。覆盖新增／编辑平台、添加／编辑账号、计划、模板、备份整体替换、请求向导、三类详情抽屉以及确认消息框，不改表格或主页面操作布局。
 - 集成前再次检查主目录，原交付 44 个文件无后续变化，三个待修复文件也与读取版本一致。共享路径直接编辑被隔离工具拒绝后，遵循其要求在匹配当前主目录的隔离副本完成补丁，仅增量应用 `TlsVerificationTest.java`、`frontend/src/style.css` 和本文三文件；复制前重新校验哈希，复制后逐字节比较，不整批覆盖先前 44 文件。
 - **按用户要求本轮未编译、未执行任何测试、未启动服务／E2E、未安装依赖、未生成或交付 JAR。** 修复效果及 TLS 完整用例是否通过由用户随后编译和验收；不宣称 115/115 或新增自动验证通过。不改权限，不修改用户数据库、配置、日志或原型，不提交或推送。
+
+## 2026-10-10 Maven Jib 镜像 tar
+
+用户要求在本地通过 Maven/Jib 生成镜像文件，上传 Linux 后用 Docker 启动；不推送镜像仓库。新增 opt-in `jib` profile、隔离前端构建脚本、仅使用已导入镜像的 `compose.image.yml` 和 [部署说明](docker-jib.md)，保留普通构建与 Dockerfile 路径。生产镜像仍由后端在 `10500` 同源提供前端和 API，不启动 Vite。
+
+- 环境：JDK 21.0.2、Maven 3.9.7、Node 22.17.0／npm 10.9.2；Jib Maven 插件 3.5.2。默认 Linux/amd64，可显式生成 arm64。
+- 首次构建因运行中的 Vite 占用 Windows 原生依赖，`npm ci` 报 `EPERM` 后失败。已改为在 `backend/target/jib/frontend-build` 复制明确的构建输入并执行锁定依赖安装、测试与构建，不复制 `.env`、数据库、日志或旧产物，不共用开发服务的依赖目录。
+- 用户停止本地服务后，原前端目录实际重新执行 `npm ci` 成功（62 个包），恢复了首次安装中断后的开发依赖。
+- 上一轮后台构建虽完成前端 34/34、后端 115/115（含 TLS），但与清理 `target` 的新命令重叠，出现 `Unable to find main class`／`Failed to delete ... target`，该轮整体构建失败，不能算镜像生成成功。确认相关旧构建已退出后，仅运行一个完整重建。
+- POM XML 与 image-only Compose YAML 静态解析通过；核对无 `build`、`pull_policy: never`、数据挂载源禁止自动创建。`git diff --check` 和前端构建脚本语法检查通过；这些不等于 Docker 运行验证。
+- 中间轮次完整测试通过，但 JAR 内容检查发现普通 `target/classes` 混入两份旧前端资源（新首页及新资源内容正确，另有旧文件）。已将整个 Jib profile 的构建输出隔离到 `backend/target/jib`，避免与 IDE 普通编译输出共用。该中间轮次已停止，不作为镜像交付结果。
+- 最终单次完整重建命令：`mvn -f backend/pom.xml -Pjib clean verify`。直连 Docker Hub 超时，查询到 Windows 已启用的系统代理后，仅为该 Maven 进程临时设置 `MAVEN_OPTS` 的 HTTP/HTTPS proxyHost／proxyPort，仍保留 TLS 校验；代理地址未写入 POM、镜像或权限配置。最终于 **2026-10-10 22:50:45 +08:00** 返回 **BUILD SUCCESS**，耗时 **3 分 2 秒**：前端 **34/34**、后端 **115/115**（0 失败、0 错误、0 跳过，含 TLS）及 Vite 生产构建通过。
+- 默认镜像 tar：`backend/target/jib/signdesk-0.1.0-linux-amd64.tar`，**141,822,464 bytes**，SHA-256 `c6de62e8a28d285481ba313d848024cce13fa58e487015bdbab6cd2ae6081e86`。只生成本地 tar，不调用 Docker daemon、不推送镜像仓库。
+- 对 Docker tar 进行只读检查：标签 `signdesk:0.1.0`、平台 `linux/amd64`、运行用户 `10001:10001`、工作目录 `/app`、端口 `10500`、数据目录 `/app/data`、显式 JVM 参数与应用入口正确；逐字节核对镜像内 3 份静态文件与本轮前端产物完全一致，没有多余旧资源。应用层不含数据库、实例锁、`.env`、`node_modules` 或 `/app/data` 下文件；基础层包含 Compose 健康检查所需 `curl`。
+- 同轮 JAR：`backend/target/jib/signdesk-0.1.0.jar`，**40,887,867 bytes**，SHA-256 `b12ee2393d23a43138181ae6bb017cc20f08b91eb20ccf11513b1d967a38b313`；可执行入口存在，JAR 内静态文件同样与最新前端逐字节一致。
+- 仍有 Vite 主 JS 超过 500 kB、Mockito 动态 agent／编译器弃用等警告；Jib 基础镜像使用标签而非固定 digest，因此不宣称跨时间完全可重现。此次解析的基础镜像摘要为 `sha256:000fd431958bc81a24abe1e8e5f0f0fd3ae365a594bd50aadb20696805f9408c`。这些警告不构成测试失败，也不等于容器验收完成。
+- 本地没有 Docker daemon，Linux 容器启动、数据目录权限、健康检查、容器内 TLS、ARM64 实际构建／运行、浏览器 E2E 与线上 CI 仍待验证。不启动或使用用户的真实数据，不提交或推送。

@@ -15,9 +15,9 @@ RUN mvn -B verify
 
 FROM eclipse-temurin:21-jre
 WORKDIR /app
-RUN mkdir -p data && chown -R 10001:10001 /app
+RUN mkdir -p data && chown 10001:10001 data
 COPY --from=java /build/backend/target/signdesk-0.1.0.jar ./signdesk.jar
 USER 10001:10001
-ENV SIGNDESK_BIND_ADDRESS=0.0.0.0 SIGNDESK_DATA_DIR=/app/data
-EXPOSE 8080
+ENV SIGNDESK_BIND_ADDRESS=0.0.0.0 SIGNDESK_PORT=10500 SIGNDESK_DATA_DIR=/app/data
+EXPOSE 10500
 ENTRYPOINT ["java", "-Xms64m", "-Xmx256m", "-jar", "/app/signdesk.jar"]

@@ -16,19 +16,19 @@ SignDesk 是个人单实例使用的 cURL 请求与签到管理工具。浏览�
 
 ## 运行
 
-服务需要 Java 21 和可写的数据目录。默认监听 `127.0.0.1:8080`，默认数据目录为当前工作目录下的 `data`。首次运行应指定一个**全新的空目录**，例如：
+服务需要 Java 21 和可写的数据目录。默认监听 `127.0.0.1:10500`，默认数据目录为用户主目录下的 `.signdesk/data`（例如 Windows `C:\Users\<用户>\.signdesk\data`、Linux `/home/<用户>/.signdesk/data`），与启动时的工作目录无关。首次运行若需要指定其他位置，请选一个**全新的空目录**，例如：
 
 ```powershell
 $env:SIGNDESK_DATA_DIR = "D:\signdesk-data-v1"
-$env:SIGNDESK_PORT = "8080"
+$env:SIGNDESK_PORT = "10500"
 java -Xms64m -Xmx256m -jar .\backend\target\signdesk-0.1.0.jar
 ```
 
-打开 `http://127.0.0.1:8080`。Linux 示例：
+打开 `http://127.0.0.1:10500`。Linux 示例：
 
 ```bash
 export SIGNDESK_DATA_DIR=/srv/signdesk-data-v1
-export SIGNDESK_PORT=8080
+export SIGNDESK_PORT=10500
 java -Xms64m -Xmx256m -jar backend/target/signdesk-0.1.0.jar
 ```
 
@@ -74,9 +74,28 @@ npm ci
 npm run dev
 ```
 
-Vite 默认在 `http://127.0.0.1:5173` 提供页面，并将 `/api` 代理到本机后端。开发和正式启动请显式使用同一绝对数据目录，避免工作目录变化时误开另一份数据库。
+Vite 默认在 `http://127.0.0.1:9500` 提供页面，并将 `/api` 代理到本机后端的 `10500` 端口。开发和正式启动默认共用同一个 `~/.signdesk/data` 数据目录；需要并行运行实例时，请为其中一个显式设置不同的绝对 `SIGNDESK_DATA_DIR`，避免误开另一份数据库。
 
 Dockerfile、Compose 与 GitHub Actions 配置已保留，但本轮没有验证 Docker 实际构建/运行或线上 CI。
+
+### Jib：本地生成镜像 tar，上传 Linux 后运行
+
+本地无需 Docker，使用 JDK 21、Maven 3.9+ 和 Node 22.12+，在仓库根目录运行：
+
+```bash
+mvn -f backend/pom.xml -Pjib clean verify
+```
+
+命令会隔离构建最新前端、运行前后端测试、打包 JAR，并生成 `backend/target/jib/signdesk-0.1.0-linux-amd64.tar`，镜像标签为 `signdesk:0.1.0`，不推送镜像仓库。ARM64 服务器使用 `-Dsigndesk.image.architecture=arm64`。
+
+上传 tar、`compose.image.yml` 和 `.env.image.example`，把后者复制为 `.env` 并设置宿主机数据目录（默认 `$HOME/.signdesk/data`，例如可改为 `/root/signdesk/data`），再按[完整部署说明](docs/docker-jib.md)把该目录初始化为容器用户 `10001:10001` 可写，然后在 Linux 服务器执行：
+
+```bash
+docker load -i signdesk-0.1.0-linux-amd64.tar
+docker compose -f compose.image.yml up -d
+```
+
+镜像包含 Java 21 和生产前端，服务器不需要 Java、Node 或源码。容器内数据目录固定为 `/app/data`，宿主机实际路径由 `SIGNDESK_HOST_DATA` 决定，二者用绑定挂载关联。生产页面与 API 都由 `10500` 提供，`9500` 仅用于前端开发。默认端口只发布到服务器本机，请通过 SSH 隧道或可信入口访问；应用没有登录鉴权。镜像不会携带本地数据库或凭证。tar 构建成功不代表 Linux 容器/E2E 已验收，实际结果见[验证记录](docs/validation.md)。
 
 ## 首次配置与执行
 
@@ -137,8 +156,8 @@ HTTP 契约：
 | 环境变量 | 默认值 / 用途 |
 |---|---|
 | `SIGNDESK_BIND_ADDRESS` | `127.0.0.1`，绑定地址 |
-| `SIGNDESK_PORT` | `8080`，HTTP 端口 |
-| `SIGNDESK_DATA_DIR` | `./data`，外部 SQLite 数据目录 |
+| `SIGNDESK_PORT` | `10500`，HTTP 端口 |
+| `SIGNDESK_DATA_DIR` | 默认 `~/.signdesk/data`，外部 SQLite 数据目录；设置后覆盖默认路径 |
 | `SIGNDESK_ALLOWED_HOSTS` | 可选，逗号分隔的明确主机白名单，例如 `internal.example.com,192.168.1.20` |
 
 ## 验证状态
