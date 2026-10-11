@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 import { readFile } from 'node:fs/promises'
 
 const created = new Set()
@@ -30,7 +30,7 @@ async function chooseBackup(page, backup) {
 
 test.beforeEach(async ({ baseURL }) => { expect(baseURL).toBe('http://127.0.0.1:18080') })
 test.afterEach(async ({ playwright }) => {
-  const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  const request = await authenticatedContext(playwright)
   try {
     for (const id of created) {
       expect((await request.delete(`/api/platforms/${id}`, { data: {} })).ok()).toBe(true)

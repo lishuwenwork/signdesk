@@ -1,8 +1,9 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 
 const platforms = new Set()
+const detailDrawer = (page) => page.getByRole('dialog', { name: '执行记录详情', exact: true })
 test.afterEach(async ({ playwright }) => {
-  const cleanup = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  const cleanup = await authenticatedContext(playwright)
   try {
     for (const id of platforms) {
       await cleanup.delete(`/api/platforms/${id}`, { data: {} })
@@ -50,7 +51,7 @@ async function openDetail(page, name, { responseTab = true } = {}) {
   }
 }
 async function closeDetail(page) {
-  await page.locator('.el-drawer__close-btn').click()
+  await detailDrawer(page).getByRole('button', { name: '关闭此对话框', exact: true }).click()
   await expect(page.getByTestId('response-body')).toHaveCount(0)
 }
 
@@ -87,28 +88,28 @@ test('response details show raw text, errors, empty, binary, partial and truncat
 
   await openDetail(page, '错误响应')
   await expect(page.getByTestId('response-body')).toContainText('<div>fixture-error-response</div>')
-  await expect(page.locator('.el-drawer')).toContainText('待确认')
+  await expect(detailDrawer(page)).toContainText('待确认')
   expect(await page.evaluate(() => !!window.__responseExecuted)).toBe(false)
   await closeDetail(page)
   await openDetail(page, '空响应')
-  await expect(page.locator('.el-drawer')).toContainText('响应体为空（0 字节）')
+  await expect(detailDrawer(page)).toContainText('响应体为空（0 字节）')
   await expect(page.getByTestId('response-body')).toHaveCount(0)
   await closeDetail(page)
   await openDetail(page, '二进制响应')
-  await expect(page.locator('.el-drawer')).toContainText('Base64')
+  await expect(detailDrawer(page)).toContainText('Base64')
   await expect(page.getByTestId('response-body')).toHaveText('AAEC/w==')
   await closeDetail(page)
   await openDetail(page, '超大响应')
-  await expect(page.locator('.el-drawer')).toContainText('以下内容已截断')
+  await expect(detailDrawer(page)).toContainText('以下内容已截断')
   await expect.poll(() => page.getByTestId('response-body').evaluate((el) => el.textContent.length)).toBe(1048576)
   await closeDetail(page)
   await openDetail(page, '部分响应')
-  await expect(page.locator('.el-drawer')).toContainText('并非完整响应')
+  await expect(detailDrawer(page)).toContainText('并非完整响应')
   await expect(page.getByTestId('response-body')).toHaveText('partial-response-fixture-secret')
   await closeDetail(page)
   await openDetail(page, '响应原文')
   await expect(page.getByTestId('response-body')).toContainText('响应体 response-fixture-secret')
-  const drawer = page.locator('.el-drawer')
+  const drawer = detailDrawer(page)
   await expect.poll(async () => Math.round((await drawer.boundingBox()).x)).toBe(870)
   await expect.poll(async () => Math.round((await drawer.boundingBox()).width)).toBe(570)
   await page.screenshot({ path: info.outputPath('response-detail-desktop.png'), fullPage: true, animations: 'disabled' })
@@ -144,14 +145,14 @@ test('closing a detail clears its body and a late response cannot replace anothe
     await ready
     await closeDetail(page)
     await openDetail(page, '当前空响应')
-    await expect(page.locator('.el-drawer')).toContainText('响应体为空（0 字节）')
+    await expect(detailDrawer(page)).toContainText('响应体为空（0 字节）')
     release()
     await done
     const before = listRequests
     await expect.poll(() => listRequests).toBeGreaterThan(before)
-    await expect(page.locator('.el-drawer')).toContainText('响应体为空（0 字节）')
+    await expect(detailDrawer(page)).toContainText('响应体为空（0 字节）')
     await expect(page.getByTestId('response-body')).toHaveCount(0)
-    await expect(page.locator('.el-drawer')).not.toContainText('response-fixture-secret')
+    await expect(detailDrawer(page)).not.toContainText('response-fixture-secret')
     await closeDetail(page)
   } finally {
     release()

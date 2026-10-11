@@ -104,7 +104,7 @@ docker load -i signdesk-0.1.0-linux-amd64.tar
 docker compose -f compose.image.yml up -d
 docker compose -f compose.image.yml ps
 docker compose -f compose.image.yml logs --tail=100 signdesk
-curl -fsS http://127.0.0.1:10500/api/system/status
+curl -fsS http://127.0.0.1:10500/api/health
 ```
 
 导入时应显示 `Loaded image: signdesk:0.1.0`。启动后检查 API 返回 `ready: true`、容器健康状态，不能把 `docker load` 成功当成应用启动成功。
@@ -135,12 +135,12 @@ docker run -d --name signdesk \
   --cap-drop ALL --security-opt no-new-privileges:true \
   -p 127.0.0.1:10500:10500 \
   --mount type=bind,src=/root/signdesk/data,dst=/app/data \
-  --health-cmd='curl -fsS --max-time 3 http://127.0.0.1:10500/api/system/status > /dev/null' \
+  --health-cmd='curl -fsS --max-time 3 http://127.0.0.1:10500/api/health > /dev/null' \
   --health-interval=30s --health-timeout=5s --health-start-period=30s --health-retries=3 \
   signdesk:0.1.0
 docker inspect --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{end}}' signdesk
 docker logs --tail=100 signdesk
-curl -fsS http://127.0.0.1:10500/api/system/status
+curl -fsS http://127.0.0.1:10500/api/health
 ```
 
 此方式用 `docker stop signdesk` 停机、`docker restart signdesk` 重启；默认端口同样不向公网发布。更新时先停旧容器并保留旧镜像，移除已停止的容器后用新镜像重新创建，宿主机的绑定数据目录不会随容器删除。
@@ -151,11 +151,15 @@ curl -fsS http://127.0.0.1:10500/api/system/status
 ssh -N -L 10500:127.0.0.1:10500 user@server
 ```
 
-保持该 SSH 连接打开，然后浏览器访问 `http://127.0.0.1:10500`（本地该端口需空闲）。应用没有登录鉴权，不应直接向公网开放。若使用可信私网入口或带认证的反向代理，还需单独验证同源写保护，不通过放宽安全过滤器解决代理配置问题。
+保持该 SSH 连接打开，然后浏览器访问 `http://127.0.0.1:10500`（本地该端口需空闲）。应用提供配置文件单管理员登录，初始账号 `admin` / `123456`。远程使用前在 `.env` 配置 `SIGNDESK_AUTH_USERNAME`、`SIGNDESK_AUTH_PASSWORD` 并重新创建容器（单纯 restart 不更新环境变量），不要直接公开明文 HTTP 管理端口。若使用可信私网入口或带认证的反向代理，还需单独验证同源写保护，不通过放宽安全过滤器解决代理配置问题。
 
 `SIGNDESK_ALLOWED_HOSTS` 是**业务 HTTP 请求目标**的内网主机白名单，不是管理页面访问者白名单，也不是登录或网络访问保护。
 
 ## 5. 日常操作与更新
+
+管理员只在应用配置中定义，不存入 SQLite，不随业务备份导入/导出。Compose 从 `.env` 读取 `SIGNDESK_AUTH_USERNAME` / `SIGNDESK_AUTH_PASSWORD` 并覆盖 JAR 的默认配置；真实 `.env` 含明文密码，不提交或公开分享。纯 Docker Engine 可通过同名 `-e` 环境变量配置。更新凭证后重新创建容器，原 Session 随进程退出失效，数据库挂载保持不变。
+
+健康检查使用匿名 `GET /api/health`，只返回 `ready`；`/api/system/status` 及其他管理 API 需要登录。HTTPS 入口可设置 `SERVER_SERVLET_SESSION_COOKIE_SECURE=true`；明文 HTTP 的本机访问/SSH 隧道保持 `false`，否则浏览器无法携带会话 Cookie。可信反向代理应保留正确 Host、协议和端口，并清除用户提供的转发头；需转发头支持时只对可信代理启用 Spring 的对应配置，不放宽同源过滤器。
 
 ```bash
 # 查看日志 / 停止 / 重启（停止会给 JVM 40 秒优雅退出时间）
@@ -175,7 +179,7 @@ docker compose -f compose.image.yml stop
 docker load -i signdesk-0.1.0-linux-amd64.tar
 SIGNDESK_IMAGE=signdesk:release-1 docker compose -f compose.image.yml up -d
 docker compose -f compose.image.yml ps
-curl -fsS http://127.0.0.1:10500/api/system/status
+curl -fsS http://127.0.0.1:10500/api/health
 ```
 
 回退镜像（仅限新旧版本数据库结构兼容，不提供自动数据库迁移或恢复）：
@@ -183,7 +187,7 @@ curl -fsS http://127.0.0.1:10500/api/system/status
 ```bash
 docker compose -f compose.image.yml stop
 SIGNDESK_IMAGE=signdesk:previous docker compose -f compose.image.yml up -d
-curl -fsS http://127.0.0.1:10500/api/system/status
+curl -fsS http://127.0.0.1:10500/api/health
 ```
 
 持续使用自定义标签时，应在部署目录 `.env` 中设置 `SIGNDESK_IMAGE`，或每次命令保持相同变量；避免后续无变量的 `up` 意外选择默认标签。不要删除持久数据目录来处理启动失败。

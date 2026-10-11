@@ -2,7 +2,8 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { api, confirm, dateTime } from '../api'
+import { api, confirm, dateTime, report } from '../api'
+import { auth, logout } from '../auth'
 import { readBackupFile } from '../backupFile.mjs'
 import { cloneSettings, settingsDirty, validateSettings } from '../settingsDraft.mjs'
 import DeskIcon from '../components/DeskIcon.vue'
@@ -52,6 +53,7 @@ onBeforeRouteUpdate(() => {
   return false
 })
 onBeforeRouteLeave(async () => {
+  if (!auth.username) return true
   if (importing.value) {
     ElMessage.info('正在整体替换配置，请等待完成后再离开。')
     return false
@@ -197,6 +199,11 @@ async function importBackup() {
     if (!disposed && current === importSession) { backupBusy.value = false; importing.value = false }
   }
 }
+async function signOut() {
+  if (dirty.value && !(await confirm('退出登录会放弃未保存的设置，已保存的配置和后台任务不受影响。是否退出？'))) return
+  try { await logout(); await router.replace({ name: 'login' }) }
+  catch (e) { report(e) }
+}
 async function loadSystem() {
   const current = ++systemSequence
   systemLoading.value = true
@@ -212,7 +219,7 @@ async function loadSystem() {
 
 <template>
   <div class="settings-page">
-    <header class="page-heading settings-heading"><div><h1>设置与备份</h1><p>保存执行偏好，也为自己的配置留一份备份。</p></div></header>
+    <header class="page-heading settings-heading"><div><h1>设置与备份</h1><p>保存执行偏好，也为自己的配置留一份备份。</p></div><div class="heading-actions"><span class="small-note">{{ auth.username }}</span><el-button :loading="auth.loggingOut" :disabled="importing" @click="signOut"><DeskIcon name="logout" />退出登录</el-button></div></header>
     <div class="settings-tabs" role="tablist" aria-label="设置分类">
       <button v-for="([key, label], index) in categories" :id="`settings-tab-${key}`" :key="key" role="tab"
         :aria-selected="tab === key" :aria-controls="`settings-panel-${key}`" :tabindex="tab === key ? 0 : -1"
@@ -288,7 +295,7 @@ async function loadSystem() {
           <p v-if="systemError" class="settings-notice error" role="alert">{{ systemError }}</p>
           <dl class="system-details"><dt>版本</dt><dd>{{ system?.version || '—' }}</dd><dt>服务状态</dt><dd>{{ system ? (system.ready ? '就绪' : '尚未就绪') : '未读取' }}</dd><dt>全局定时</dt><dd>{{ system ? (system.paused ? '已暂停' : '已启用') : '—' }}</dd><dt>活动批次</dt><dd>{{ system?.activeBatches ?? '—' }} 个</dd><dt>服务器时间</dt><dd>{{ dateTime(system?.now) }}（北京）</dd><dt>持久化方式</dt><dd>SQLite · 数据目录位于程序包外</dd></dl>
           <el-button size="small" :loading="systemLoading" @click="loadSystem">刷新系统状态</el-button>
-        </div></section><section class="panel settings-panel"><div class="settings-panel-heading"><h2>访问与数据边界</h2></div><div class="settings-panel-pad"><p class="settings-small-note">正式系统默认监听本机，没有应用登录。远程访问请使用自己的私有入口；一个数据目录只能由一个服务进程使用。</p><div class="settings-helper warning">请求、执行响应和配置备份均为明文。请通过操作系统权限、磁盘与备份管理、私有网络保护访问。</div><p class="settings-small-note">配置保存在服务器，运行数据独立于程序包。前端页面关闭不影响服务器任务；停止 Spring Boot 服务后，任务也会停止。</p><p class="settings-small-note">响应正文最多 1 MiB，列表不含正文；详情按需读取且禁止缓存，HTML 仅作为纯文本显示。</p></div></section></div>
+        </div></section><section class="panel settings-panel"><div class="settings-panel-heading"><h2>访问与数据边界</h2></div><div class="settings-panel-pad"><p class="settings-small-note">正式系统默认监听本机，使用配置文件中的管理员账号登录。远程访问请修改初始密码并使用 HTTPS 或可信私有入口；一个数据目录只能由一个服务进程使用。</p><div class="settings-helper warning">请求、执行响应和配置备份均为明文。请通过操作系统权限、磁盘与备份管理、私有网络保护访问。</div><p class="settings-small-note">配置保存在服务器，运行数据独立于程序包。前端页面关闭不影响服务器任务；停止 Spring Boot 服务后，任务也会停止。</p><p class="settings-small-note">响应正文最多 1 MiB，列表不含正文；详情按需读取且禁止缓存，HTML 仅作为纯文本显示。</p></div></section></div>
       </template>
     </div>
     <div v-if="form && (tab === 'execution' || tab === 'proxy')" class="save-bar"><span role="status">{{ dirty ? '● 有未保存的修改' : '当前配置已保存' }} · v{{ saved.version }}</span><div class="save-bar-actions"><el-button :disabled="!dirty || saving || loading || importing" @click="reload">放弃修改</el-button><el-button type="primary" :loading="saving" :disabled="!dirty || loading || importing || conflict" @click="save">保存设置</el-button></div></div>

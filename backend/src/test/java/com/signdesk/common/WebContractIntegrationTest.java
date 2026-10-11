@@ -7,6 +7,7 @@ import com.signdesk.engine.ResultRules;
 import com.signdesk.service.*;
 import com.sun.net.httpserver.HttpServer;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -38,6 +39,8 @@ class WebContractIntegrationTest {
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("signdesk.data-dir", () -> DIR.resolve("data").toString());
         registry.add("signdesk.allowed-hosts", () -> "127.0.0.1");
+        registry.add("signdesk.auth.username", () -> "web-fixture");
+        registry.add("signdesk.auth.password", () -> "web-fixture-password");
     }
 
     @Autowired Environment environment;
@@ -46,7 +49,14 @@ class WebContractIntegrationTest {
     @Autowired IRequestService requests;
     @Autowired IRequestTemplateService templates;
     @Autowired ISettingsService settings;
-    final HttpClient client = HttpClient.newHttpClient();
+    final HttpClient client = HttpClient.newBuilder()
+            .cookieHandler(new java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL)).build();
+
+    @BeforeEach
+    void login() throws Exception {
+        var response = post("/auth/login", Map.of("username", "web-fixture", "password", "web-fixture-password"));
+        assertEquals(200, response.statusCode());
+    }
 
     String addPlatform(String name, String note, boolean enabled) {
         var b = new PlatformBo();

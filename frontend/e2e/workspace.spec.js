@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 const created = new Set()
 const send = async (request, method, path, data) => {
   const response = await request[method](path, data === undefined ? {} : { data })
@@ -22,7 +22,7 @@ async function run(request,id) {
 const closeDrawer=async page=> {await page.locator('.el-drawer:visible .el-drawer__close-btn').last().click();await expect(page.getByTestId('response-body')).toHaveCount(0)}
 async function overflow(page,width) {expect(await page.evaluate(()=>Math.max(document.documentElement.scrollWidth,document.body.scrollWidth))).toBeLessThanOrEqual(width+1)}
 test.afterEach(async({playwright})=> {
-  const request=await playwright.request.newContext({baseURL:'http://127.0.0.1:18080'})
+  const request=await authenticatedContext(playwright)
   try {for(const id of created) {const result=await request.delete(`/api/platforms/${id}`,{data:{}});expect(result.ok()).toBe(true);created.delete(id)}}finally{await request.dispose()}
 })
 

@@ -17,7 +17,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'node ../scripts/e2e-server.mjs',
-    url: 'http://127.0.0.1:18080/api/system/status',
+    url: 'http://127.0.0.1:18080/api/health',
     reuseExistingServer: false,
     timeout: 60000,
   },

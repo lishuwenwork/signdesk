@@ -22,6 +22,11 @@ public class SystemServiceImpl implements ISystemService {
     private final Clock clock;
 
     @Override
+    public HealthVo health() {
+        return new HealthVo(coordinator.ready());
+    }
+
+    @Override
     public SystemStatusVo status() {
         return new SystemStatusVo(
                 coordinator.ready(),

@@ -9,6 +9,9 @@ services:
       SIGNDESK_PORT: ${SIGNDESK_PORT:-10500}
       SIGNDESK_DATA_DIR: /app/data
       SIGNDESK_ALLOWED_HOSTS: ${SIGNDESK_ALLOWED_HOSTS:-}
+      SIGNDESK_AUTH_USERNAME: ${SIGNDESK_AUTH_USERNAME:-admin}
+      SIGNDESK_AUTH_PASSWORD: ${SIGNDESK_AUTH_PASSWORD:-123456}
+      SERVER_SERVLET_SESSION_COOKIE_SECURE: ${SERVER_SERVLET_SESSION_COOKIE_SECURE:-false}
     volumes:
       # Host path is configurable; the container always sees SQLite at /app/data.
       # Default keeps the existing per-user location. create_host_path stays false so a
@@ -27,7 +30,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS --max-time 3 http://127.0.0.1:$${SIGNDESK_PORT}/api/system/status > /dev/null"]
+      test: ["CMD-SHELL", "curl -fsS --max-time 3 http://127.0.0.1:$${SIGNDESK_PORT}/api/health > /dev/null"]
       interval: 30s
       timeout: 5s
       start_period: 30s

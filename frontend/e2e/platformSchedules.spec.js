@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 
 const created = new Set()
 async function api(request, method, url, data) {
@@ -38,7 +38,7 @@ async function pauseSettings(request) {
 
 test.beforeEach(async ({ baseURL }) => { expect(baseURL).toBe('http://127.0.0.1:18080') })
 test.afterEach(async ({ playwright }) => {
-  const cleanup = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  const cleanup = await authenticatedContext(playwright)
   try {
     for (const id of created) {
       expect((await cleanup.delete(`/api/platforms/${id}`, { data: {} })).ok()).toBe(true)

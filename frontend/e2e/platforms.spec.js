@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 
 const createdPlatforms = new Set()
 const fixtureCurl = "curl 'http://127.0.0.1:18081/check' -H 'Cookie: layout-fixture=one'"
@@ -38,7 +38,11 @@ async function selectPlatform(page, name) {
   await expect(page.getByRole('heading', { name, level: 2, exact: true })).toBeVisible()
 }
 async function requestAction(page, row, name) {
+  // Mouse-opened menus can keep focus on the trigger after Escape; close outside first.
+  await page.getByRole('heading', { name: '平台与账号', level: 1, exact: true }).click()
+  await expect(page.locator('[role="menu"]:visible')).toHaveCount(0)
   await row.locator('.row-actions').getByRole('button', { name: /的更多操作$/ }).click()
+  await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible()
   await page.getByRole('menuitem', { name, exact: true }).click()
 }
 async function selectStatus(page, name) {
@@ -58,7 +62,7 @@ test.beforeEach(async ({ baseURL }) => {
   expect(baseURL).toBe('http://127.0.0.1:18080')
 })
 test.afterEach(async ({ playwright }) => {
-  const cleanup = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  const cleanup = await authenticatedContext(playwright)
   try {
     for (const id of createdPlatforms) {
       const response = await cleanup.delete(`/api/platforms/${id}`, { data: {} })
@@ -201,7 +205,7 @@ test('direct maintenance actions preserve versions, reveal creations and confirm
 
   await requestAction(page, row, '启用请求')
   await expect.poll(async () => (await savedRequest(request, platform.id, item.id)).enabled).toBe(1)
-  await expect(row.locator('.state-text')).toHaveText('今日未执行')
+  await expect(row.locator('.state-text')).toHaveText('今日未完成')
   await row.getByRole('button', { name: '改名请求的更多操作', exact: true }).click()
   await expect(page.getByRole('menuitem', { name: '禁用请求', exact: true })).toBeEnabled()
   await page.keyboard.press('Escape')
@@ -280,6 +284,8 @@ test('synthetic list states expose credential issues and inherited disablement w
   await placeholder.getByRole('button', { name: '占位请求的更多操作', exact: true }).click()
   await expect(page.getByRole('menuitem', { name: '查看完整请求', exact: true })).toBeDisabled()
   await page.keyboard.press('Escape')
+  await page.getByRole('heading', { name: '平台与账号', level: 1, exact: true }).click()
+  await expect(page.locator('[role="menu"]:visible')).toHaveCount(0)
   await placeholder.getByRole('button', { name: '更新 cURL', exact: true }).click()
   await expect(page.getByRole('textbox', { name: '完整 cURL', exact: true })).toHaveValue('')
   await page.getByRole('button', { name: '取消', exact: true }).click()

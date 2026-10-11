@@ -15,6 +15,8 @@ const paths = {
   refresh: 'M20 7V3l-4 4M4 17v4l4-4M20 7a9 9 0 0 0-15-2M4 17a9 9 0 0 0 15 2',
   template: 'M6 3h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2ZM8 8h8M8 12h8M8 16h5',
   pause: 'M8 5v14M16 5v14', arrow: 'M5 12h14m-5-5 5 5-5 5',
+  logout: 'M9 4H4v16h5M10 12h11m-4-4 4 4-4 4', user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2',
+  lock: 'M6 10h12v11H6ZM8 10V7a4 4 0 0 1 8 0v3M12 14v3',
   power: 'M12 3v9M7 5a9 9 0 1 0 10 0', trash: 'M4 6h16M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7',
 }
 </script>

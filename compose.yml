@@ -8,6 +8,9 @@ services:
     environment:
       SIGNDESK_PORT: ${SIGNDESK_PORT:-10500}
       SIGNDESK_ALLOWED_HOSTS: ${SIGNDESK_ALLOWED_HOSTS:-}
+      SIGNDESK_AUTH_USERNAME: ${SIGNDESK_AUTH_USERNAME:-admin}
+      SIGNDESK_AUTH_PASSWORD: ${SIGNDESK_AUTH_PASSWORD:-123456}
+      SERVER_SERVLET_SESSION_COOKIE_SECURE: ${SERVER_SERVLET_SESSION_COOKIE_SECURE:-false}
     volumes:
       - signdesk-data:/app/data
     restart: unless-stopped

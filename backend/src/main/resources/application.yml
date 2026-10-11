@@ -2,6 +2,14 @@ server:
   address: ${SIGNDESK_BIND_ADDRESS:127.0.0.1}
   port: ${SIGNDESK_PORT:10500}
   shutdown: graceful
+  servlet:
+    session:
+      timeout: 30m
+      persistent: false
+      tracking-modes: cookie
+      cookie:
+        http-only: true
+        same-site: lax
   tomcat:
     max-http-form-post-size: 12MB
 spring:
@@ -13,6 +21,9 @@ spring:
     multipart:
       enabled: false
 signdesk:
+  auth:
+    username: admin
+    password: "123456"
   data-dir: ${SIGNDESK_DATA_DIR:${user.home}/.signdesk/data}
   allowed-hosts: ${SIGNDESK_ALLOWED_HOSTS:}
   scan-delay-ms: 5000

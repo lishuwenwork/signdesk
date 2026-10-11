@@ -53,9 +53,9 @@ class BackendArchitectureTest {
     }
 
     @Test
-    void tenBusinessInterfacesAndTypedControllersHaveNoPersistenceDependencies() {
+    void businessInterfacesAndTypedControllersHaveNoPersistenceDependencies() {
         assertEquals(
-                10,
+                11,
                 List.of(
                                 IPlatformService.class,
                                 IAccountService.class,
@@ -66,6 +66,7 @@ class BackendArchitectureTest {
                                 IRunRecordService.class,
                                 ISettingsService.class,
                                 IBackupService.class,
+                                IAuthService.class,
                                 ISystemService.class)
                         .size());
         for (var controller :
@@ -78,6 +79,7 @@ class BackendArchitectureTest {
                         RunController.class,
                         SettingsController.class,
                         BackupController.class,
+                        AuthController.class,
                         SystemController.class)) {
             for (var field : controller.getDeclaredFields()) {
                 assertTrue(Modifier.isFinal(field.getModifiers()), field.toString());
@@ -150,6 +152,7 @@ class BackendArchitectureTest {
                         revision,
                         response,
                         settings,
+                        new LoginBo(secret, secret),
                         new NewRequestBo(secret, secret, true, rules),
                         new CurlBo(secret, 1),
                         new RuleTestBo(rules, 200, secret),

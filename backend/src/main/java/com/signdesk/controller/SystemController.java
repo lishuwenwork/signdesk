@@ -6,6 +6,7 @@ import com.signdesk.service.*;
 
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -13,6 +14,12 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class SystemController {
     private final ISystemService service;
+
+    @GetMapping("/health")
+    public ResponseEntity<HealthVo> health() {
+        var health = service.health();
+        return ResponseEntity.status(health.ready() ? 200 : 503).body(health);
+    }
 
     @GetMapping("/system/status")
     public SystemStatusVo status() {

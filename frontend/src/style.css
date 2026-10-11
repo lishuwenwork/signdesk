@@ -43,6 +43,11 @@ h3 { font-size: 13px; font-weight: 500; }
 .sidebar nav a.selected { background: var(--lime); color: var(--forest-deep); }
 .sidebar-footer { margin-top: auto; display: grid; justify-items: center; gap: 7px; font-size: 9px; }
 .sidebar-footer small { font: 9px var(--mono); color: #c1d0b7; }
+.sidebar-user { max-width: 62px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px var(--mono); color: #c1d0b7; }
+.sidebar-logout { border: 1px solid #ffffff20; border-radius: 7px; background: transparent; color: #c1d0b7; width: 32px; height: 32px; display: grid; place-items: center; margin-bottom: 5px; }
+.sidebar-logout:hover { background: #ffffff10; color: white; }
+.sidebar-service { display: grid; justify-items: center; gap: 7px; }
+.session-loading { min-height: 100svh; display: grid; place-items: center; color: var(--muted); }
 .status-dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: #507652; flex: 0 0 auto; }
 .sidebar-footer .status-dot { background: #b6d49d; }
 .status-dot.offline, .status-dot.warn { background: #ba853b; }

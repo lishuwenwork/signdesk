@@ -1,10 +1,10 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, authenticatedContext } from './fixtures.js'
 import { readFile } from 'node:fs/promises'
 
 const createdPlatforms = new Set()
 test.afterEach(async ({ playwright }) => {
   if (!createdPlatforms.size) return
-  const cleanup = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:18080' })
+  const cleanup = await authenticatedContext(playwright)
   try {
     for (const id of createdPlatforms) {
       await cleanup.delete(`/api/platforms/${id}`, { data: {} })

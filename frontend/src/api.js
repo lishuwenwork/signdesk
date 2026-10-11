@@ -1,28 +1,16 @@
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { onMounted, onUnmounted } from 'vue'
 
-export async function api(path, method = 'GET', body) {
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    cache: 'no-store',
-  })
-  let data
-  try {
-    data = await response.json()
-  } catch {
-    throw new Error('服务响应无法读取，请检查后端是否运行')
-  }
-  if (!response.ok) {
-    const error = new Error(data.message || `服务返回 ${response.status}`)
-    error.status = response.status
-    throw error
-  }
-  return data
+import { createApiClient } from './apiClient.js'
+
+let sessionVersion = () => 0, unauthorized = () => {}
+export function configureSession({ getSessionVersion, onUnauthorized }) {
+  sessionVersion = getSessionVersion
+  unauthorized = onUnauthorized
 }
+export const api = createApiClient({ getSessionVersion: () => sessionVersion(), onUnauthorized: () => unauthorized() })
 export function report(error) {
-  ElMessage.error(error.message || '操作失败')
+  if (!error.silent) ElMessage.error(error.message || '操作失败')
 }
 export function periodic(action, delay = 5000) {
   let timer,
@@ -47,13 +35,14 @@ export function periodic(action, delay = 5000) {
   })
 }
 export async function confirm(message) {
+  const current = sessionVersion()
   try {
     await ElMessageBox.confirm(message, '确认操作', {
       confirmButtonText: '确认',
       cancelButtonText: '取消',
       type: 'warning',
     })
-    return true
+    return current === sessionVersion()
   } catch {
     return false
   }

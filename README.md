@@ -12,7 +12,9 @@ SignDesk 是个人单实例使用的 cURL 请求与签到管理工具。浏览�
 - 支持结果分类、凭证过期暂停、每日日志与去重状态；查看执行响应详情，支持文本、HTML 纯文本和 Base64 呈现。
 - 提供两种配置导出和“先预览、再确认替换”的导入。完整配置可能含有原始 cURL 和凭证，属于敏感明文文件。
 
-技术栈为 Java 21、Spring Boot 4 / Spring MVC、SQLite、MyBatis-Plus、Hutool HTTP、Vue 3 / JavaScript。生产为同源单 JAR，SQLite 文件位于 JAR 外部的数据目录；无登录模块，不应直接暴露到不可信网络。
+技术栈为 Java 21、Spring Boot 4 / Spring MVC、SQLite、MyBatis-Plus、Hutool HTTP、Vue 3 / JavaScript。生产为同源单 JAR，SQLite 文件位于 JAR 外部的数据目录。支持配置文件中的单管理员登录，不建用户表、不提供注册或验证码；远程使用仍应通过 HTTPS 或可信私有入口。
+
+> **2026-10-11 登录功能**：当前源码已增加登录与 Session 鉴权，下面 2026-10-09 的交付状态及旧产物说明是历史记录，不代表旧 JAR/镜像含登录页。请重新构建；本轮实际验证见 [验证记录](docs/validation.md)。
 
 ## 运行
 
@@ -33,6 +35,41 @@ java -Xms64m -Xmx256m -jar backend/target/signdesk-0.1.0.jar
 ```
 
 `SIGNDESK_DATA_DIR` 应指向新的数据位置，而不是原有应用留下的目录。新程序使用 `signdesk-plain-v1`、schema version 1 的 SQLite 结构；遇到不兼容或不完整的数据库时，会拒绝启动，不会迁移、清空、重建或删除文件。请保留已有数据目录；需要新实例时另选目录。不要将旧数据库直接作为新实例数据源。
+
+### 管理员登录配置
+
+在 `backend/src/main/resources/application.yml` 配置唯一管理员：
+
+```yaml
+signdesk:
+  auth:
+    username: admin
+    password: "123456"
+```
+
+启动后先登录，再进入管理页面。只有这一个配置账号，没有用户表、注册或验证码。**`123456` 是初始弱密码，远程使用前请修改**；修改后重启生效，应用重启后原登录会话失效。账号只用于页面和管理 API，退出不会停止后台任务，业务备份不包含或替换管理员配置。
+
+源码启动读取上述 YAML。已发布的 JAR 无需解包修改，可在可信位置保存同样结构的外部 YAML，然后：
+
+```bash
+java -jar backend/target/signdesk-0.1.0.jar --spring.config.additional-location=file:/absolute/path/signdesk-admin.yml
+```
+
+也可以通过 `SIGNDESK_AUTH_USERNAME`、`SIGNDESK_AUTH_PASSWORD` 环境变量覆盖；Docker Compose 可在不提交的 `.env` 中配置这两个变量。外部配置含明文密码，需限制文件权限，不纳入公开备份或源码提交。
+
+会话使用服务端内存与 HttpOnly / SameSite=Lax Cookie，空闲超时 30 分钟，无“记住密码”；打开页面时正常轮询会延续会话。HTTPS 部署可设置 `SERVER_SERVLET_SESSION_COOKIE_SECURE=true`，纯 HTTP 本机/SSH 隧道不要开启，否则浏览器不能携带登录 Cookie。反向代理需保留正确的外部 Host、协议和端口，仅在代理可信且清理客户端转发头时启用 Spring 的 forwarded-header 配置，不放宽同源写保护。
+
+匿名只允许登录、会话查询、退出和只返回 `{ "ready": true }` 的 `GET /api/health`；其他管理 API（含 `/api/system/status`）需登录，否则返回 401。
+
+### 本轮登录功能验证 JAR（2026-10-11）
+
+`backend/target/signdesk-0.1.0-login.jar` 已包含登录页与后端鉴权，由最终隔离全量构建复制为新文件名，没有覆盖旧 JAR：
+
+```bash
+java -Xms64m -Xmx256m -jar backend/target/signdesk-0.1.0-login.jar
+```
+
+默认数据目录仍是 `~/.signdesk/data`；已有运行实例请先正常停止再启动，不能同时使用同一数据目录。开发时前端使用新源码，后端需重启。旧镜像/tar 不含此次登录改动，Docker 部署须重新构建镜像。该 JAR 是忽略的生成文件，不提交源码；复现方式仍为 `node scripts/build.mjs`。
 
 ### 本次已验证的本地 JAR 副本
 
@@ -95,11 +132,11 @@ docker load -i signdesk-0.1.0-linux-amd64.tar
 docker compose -f compose.image.yml up -d
 ```
 
-镜像包含 Java 21 和生产前端，服务器不需要 Java、Node 或源码。容器内数据目录固定为 `/app/data`，宿主机实际路径由 `SIGNDESK_HOST_DATA` 决定，二者用绑定挂载关联。生产页面与 API 都由 `10500` 提供，`9500` 仅用于前端开发。默认端口只发布到服务器本机，请通过 SSH 隧道或可信入口访问；应用没有登录鉴权。镜像不会携带本地数据库或凭证。tar 构建成功不代表 Linux 容器/E2E 已验收，实际结果见[验证记录](docs/validation.md)。
+镜像包含 Java 21 和生产前端，服务器不需要 Java、Node 或源码。容器内数据目录固定为 `/app/data`，宿主机实际路径由 `SIGNDESK_HOST_DATA` 决定，二者用绑定挂载关联。生产页面与 API 都由 `10500` 提供，`9500` 仅用于前端开发。默认端口只发布到服务器本机，请通过 SSH 隧道或可信入口访问；管理页面需要管理员登录，远程部署前修改初始密码。镜像不会携带本地数据库或凭证。tar 构建成功不代表 Linux 容器/E2E 已验收，实际结果见[验证记录](docs/validation.md)。
 
 ## 首次配置与执行
 
-1. 在“平台与账号”新增平台、账号，再创建请求。
+1. 使用配置文件中的管理员账号登录，再在“平台与账号”新增平台、账号和请求。
 2. 粘贴浏览器复制的完整 cURL，查看方法、URL、Headers 和 Body 的解析预览。预览不发送请求；不会执行 shell，也不会读取 cURL 引用的文件。
 3. 按平台响应配置结果规则。规则区分数字 `0`、字符串 `"0"`、布尔和 null，不执行用户脚本。
 4. 手动执行并检查结果，再配置平台计划。
@@ -151,13 +188,16 @@ HTTP 契约：
 
 原始 cURL 与结构化请求写入 SQLite 明文；响应字节以 BLOB 保存。程序不把完整请求、响应正文、备份内容或 SQL 参数写入应用日志。SQLite 文件和完整配置文件仍可能含敏感内容，必须依靠操作系统文件权限和可信备份管理保护。
 
-默认监听本机 `127.0.0.1`，没有登录/Session/JWT。远程使用应置于用户自有的私有网络入口之后，不要直接公开管理端口。默认网络策略阻止本机、内网、链路本地及云元数据地址；个人内部目标仅能按明确主机白名单放行，云元数据目标始终阻止。
+默认监听本机 `127.0.0.1`，管理 API 使用 Session 鉴权，无用户表或 JWT。登录不能代替 HTTPS、文件权限和网络隔离；远程使用应修改默认密码并置于可信入口之后，不要直接公开明文 HTTP 管理端口。默认网络策略阻止本机、内网、链路本地及云元数据地址；个人内部目标仅能按明确主机白名单放行，云元数据目标始终阻止。
 
 | 环境变量 | 默认值 / 用途 |
 |---|---|
 | `SIGNDESK_BIND_ADDRESS` | `127.0.0.1`，绑定地址 |
 | `SIGNDESK_PORT` | `10500`，HTTP 端口 |
 | `SIGNDESK_DATA_DIR` | 默认 `~/.signdesk/data`，外部 SQLite 数据目录；设置后覆盖默认路径 |
+| `SIGNDESK_AUTH_USERNAME` | `admin`，覆盖配置文件中的管理员用户名 |
+| `SIGNDESK_AUTH_PASSWORD` | `123456`，覆盖管理员密码，远程使用前必须修改 |
+| `SERVER_SERVLET_SESSION_COOKIE_SECURE` | HTTPS 部署设为 `true`；本机 HTTP / SSH 隧道保持默认 |
 | `SIGNDESK_ALLOWED_HOSTS` | 可选，逗号分隔的明确主机白名单，例如 `internal.example.com,192.168.1.20` |
 
 ## 验证状态

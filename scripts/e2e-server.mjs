@@ -6,7 +6,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const jar = path.join(root, 'backend/target/signdesk-0.1.0.jar')
+const jar = process.env.SIGNDESK_TEST_JAR
+  ? path.resolve(process.env.SIGNDESK_TEST_JAR)
+  : path.join(root, 'backend/target/signdesk-0.1.0.jar')
 if (!existsSync(jar)) throw new Error('Run node scripts/build.mjs before the browser tests')
 const directory = mkdtempSync(path.join(tmpdir(), 'signdesk-browser-'))
 const received = []
@@ -48,7 +50,7 @@ const fixture = createServer(async (request, response) => {
 })
 fixture.listen(18081, '127.0.0.1')
 const executable = process.env.JAVA_HOME ? path.join(process.env.JAVA_HOME, 'bin', process.platform === 'win32' ? 'java.exe' : 'java') : 'java'
-const backend = spawn(executable, ['-jar', jar], { env: { ...process.env, SIGNDESK_PORT: '18080', SIGNDESK_BIND_ADDRESS: '127.0.0.1', SIGNDESK_DATA_DIR: path.join(directory, 'data'), SIGNDESK_ALLOWED_HOSTS: '127.0.0.1' }, stdio: 'inherit' })
+const backend = spawn(executable, ['-jar', jar], { env: { ...process.env, SIGNDESK_PORT: '18080', SIGNDESK_BIND_ADDRESS: '127.0.0.1', SIGNDESK_DATA_DIR: path.join(directory, 'data'), SIGNDESK_ALLOWED_HOSTS: '127.0.0.1', SIGNDESK_AUTH_USERNAME: 'admin', SIGNDESK_AUTH_PASSWORD: '123456' }, stdio: 'inherit' })
 let stopped = false
 function stop() { if (stopped) return; stopped = true; fixture.close(); backend.kill('SIGTERM') }
 process.on('SIGINT', stop); process.on('SIGTERM', stop)

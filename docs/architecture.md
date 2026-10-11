@@ -2,7 +2,7 @@
 
 > 状态：**P1～P5 已实现；P6 自动化发布验证通过，浏览器 E2E 待运行；P7 文档收尾已完成**。日期：2026-10-09。
 > 代码集成在 `refactor/backend-ruoyi-style` 主工作区，`475c46a` 是实现前基线；当前实现尚未提交/推送。后端最终 110/110、前端单元 8/8、独立全量发布通过；浏览器 E2E 实际运行 0 项。详见 [重构计划](refactoring-plan.md) 与 [验证记录](validation.md)。
-> 本文说明已落地结构、数据约束和仍需保留的设计不变量；用户验收要求见 [需求文档](requirements.md)。第 1～12 节保留 2026-10-09 的重构记录；2026-10-10 正式全站前端落地与只读摘要扩展见第 13 节，最新验证以 validation.md 的当日章节为准。
+> 本文说明已落地结构、数据约束和仍需保留的设计不变量；用户验收要求见 [需求文档](requirements.md)。第 1～12 节保留 2026-10-09 的重构记录；2026-10-10 正式全站前端落地与只读摘要扩展见第 13 节，2026-10-11 单管理员 Session 登录见第 14 节，最新验证以 validation.md 的当日章节为准。
 
 ## 1. 设计目标
 
@@ -51,12 +51,12 @@
 
 ```text
 backend/src/main/java/com/signdesk/
-├── controller/          # 9 个 HTTP Controller；参数、校验、Service 调用、VO 返回
+├── controller/          # 原 9 个业务 Controller；第 14 节增加 AuthController
 ├── domain/              # 实体；字段私有并使用 Lombok
 │   ├── bo/              # 输入对象
 │   └── vo/              # 列表、详情、分页及动作输出
 ├── mapper/              # MyBatis-Plus BaseMapper 与命名清晰的特殊 SQL 方法
-├── service/             # 10 个 IXxxService 业务接口
+├── service/             # 原 10 个业务接口；第 14 节增加 IAuthService
 │   └── impl/            # 对应 XxxServiceImpl 实现
 ├── engine/              # cURL 解析、请求/响应值对象、规则和 HTTP 执行
 ├── scheduler/           # 计划扫描、运行协调、队列派发和平台工作线程
@@ -195,7 +195,7 @@ backend/src/main/resources/
 - `/requests/{id}/revision` 和 `/runs/{id}` 明确返回详情，保持 `Cache-Control: no-store`。
 - 不返回“解密失败”等已无意义状态；未保存、未获取、空、部分、截断仍须区分。
 - 浏览器仅纯文本呈现响应，关闭清除；不在 LocalStorage/IndexedDB 中缓存凭证。
-- 数据库与完整导出文件的访问风险通过明确提示和文件/网络访问权限处理，不偷偷引入新的加密层或应用登录。
+- 数据库与完整导出文件的风险通过明确提示和文件/网络访问权限处理，不引入新的数据加密层。2026-10-11 按用户明确要求新增单管理员 Session 登录，详见第 14 节；登录不加密文件。
 
 ## 9. 新明文配置格式（已实现）
 
@@ -280,3 +280,14 @@ backend/src/main/resources/
 - `lastRun: null | { id, status, finishedAt, createdAt, httpStatus, durationMs }`：只读最近执行摘要，没有原始请求、正文或摘要消息；日志已清理时可以为 null，日标记仍保留。
 
 专用 `RequestStatusQueryMapper.xml` 批量装配状态和摘要，平台树共四次批量查询，无客户端 N+1，四次读取绑定同一短只读事务；不修改数据库 schema、队列或发送事务。每请求使用既有 `items_request` 索引范围关联 top-1，不物化全历史窗口。最近执行按批次 UTC 秒与右补九位的纳秒小数精确降序，执行项 `rowid DESC` 打破同刻并列，避免可变精度 `Instant.toString()` 的字符串排序错误；既有 `RunRecordMapper.queryLogs` 的元数据列表同步采用相同排序，保证最近记录与请求摘要一致，不改变列表字段或接口。仍需扫描各请求保留历史，不宣称 O(请求数)，也未完成 365 天容量压测。其余 HTTP 路径、BO/VO、明文 `signdesk-plain-v1` 备份和执行语义不变；规则编辑保留真实契约支持的四类严格 JSON／文本规则与试算，不引入原型示例中的额外判断能力。
+
+## 14. 2026-10-11 配置文件单管理员登录
+
+- 增加 `AuthController → IAuthService → AuthServiceImpl`，共 10 个 Controller、11 组业务接口/实现。`AuthProperties` 绑定 `signdesk.auth.username/password`，默认 `admin` / `123456`，配置缺失或越界拒绝启动；用户名、密码不进入数据库或业务备份。
+- `LoginBo` 明确限制用户名/密码长度，敏感输入和配置不生成泄露凭证的 toString。凭证采用定长 SHA-256 摘要恒定时间比较，错误统一 401；摘要只用于内存比较，不宣称配置密码被加密。内存限流每来源一分钟最多 5 次失败、最多 1024 个未过期来源，容量耗尽时保守返回 429，不按任意转发头识别来源。
+- Servlet `HttpSession` 保存必要身份，登录轮换 ID，退出销毁 Session 并清除 Cookie。仅 Cookie 跟踪、HttpOnly / SameSite=Lax、30 分钟空闲超时、无会话持久化。重启要求重新登录，不依赖 Spring Security、JWT、Redis 或用户表。
+- `RequestBoundary` 在 Controller 前保护管理 API 的读取和写入；精确公开 `POST /api/auth/login`、`GET /api/auth/session`、`POST /api/auth/logout`、`GET /api/health`。异常编码/分号路径拒绝，原有同源 JSON 写保护、安全头与真实字节上限继续保留；登录正文另限 8 KiB。详细系统状态、请求原文、响应详情、备份、执行均需 Session。
+- `SystemController` 公开最小 `HealthVo(ready)`，只查询协调器就绪状态，就绪 200、未就绪 503；健康探针无需密码，不泄露业务数据。Docker 与 Playwright 等待地址改为此接口。
+- 前端顶层 RouterView 将独立 Login 与受保护 AppShell 分开，登录页不挂载业务轮询。状态只在内存，401 立即清除身份、卸载管理布局与敏感抽屉、关闭全局确认；请求带会话 generation，注销之前的迟到响应不能污染下一次登录。路由返回目标仅接受原五个内部业务路径。设置页和桌面侧栏提供退出，后台队列和调度不依赖浏览器会话。
+- 初始密码远程部署前应修改；外部 Spring YAML 或 `SIGNDESK_AUTH_USERNAME/PASSWORD` 可覆盖配置。HTTPS 启用 Secure Cookie，可信代理正确处理 Host/协议/端口，不开放跨域或放宽 Origin 校验。SQLite 和备份仍是明文，文件权限与网络访问纪律不变。
+- 本轮验证与首次失败记录见 [验证记录](validation.md) 的 2026-10-11 章节，不用历史数据替代当前浏览器验收。

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './fixtures.js'
 
 const pages = [
   { path: '/', title: '今日概览', endpoint: '/api/dashboard', action: '执行全部平台' },
@@ -89,7 +89,11 @@ for (const viewport of viewports) {
         }
         if (target.path === '/runs') {
           await expect(page.locator('.run-filter-note')).toHaveText('HTTP 200 不自动代表业务成功')
-          await expect(page.locator('.log-table')).toBeVisible()
+          await expect(page.locator('.log-table')).toHaveCount(1)
+          if (viewport.name === 'mobile' && !(await page.locator('.log-table tbody tr').count())) {
+            // On mobile the header is hidden, so an empty table has no visible box.
+            await expect(page.getByRole('heading', { name: '暂无符合条件的执行记录', exact: true })).toBeVisible()
+          } else await expect(page.locator('.log-table')).toBeVisible()
         }
         await expectNoOverflow(page, viewport.width)
       }
