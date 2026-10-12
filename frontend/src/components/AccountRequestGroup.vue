@@ -57,7 +57,7 @@ const presentation = request => requestPresentation(request, props.account.enabl
         </div>
         <div class="request-state" :class="presentation(request).tone">
           <span class="state-text"><DeskIcon :name="presentation(request).icon" />{{ presentation(request).label }}</span>
-          <p class="state-caption">{{ presentation(request).caption }}</p>
+          <p class="state-caption"><template v-if="presentation(request).caption.startsWith('已禁用')"><span class="danger-text">已禁用</span>{{ presentation(request).caption.slice(3) }}</template><template v-else>{{ presentation(request).caption }}</template></p>
         </div>
         <button v-if="request.lastRun" class="last-run" @click="emit('show-run', request.lastRun.id)">
           <span class="last-run-time">{{ dateTime(request.lastRun.finishedAt || request.lastRun.createdAt) }}</span>
@@ -115,6 +115,7 @@ const presentation = request => requestPresentation(request, props.account.enabl
 .warning .state-text { color: var(--amber); }
 .active .state-text { color: var(--blue); }
 .muted .state-text { color: var(--muted); }
+.request-state.disabled .state-text { color: var(--red); }
 .state-caption { margin-top: 4px; color: #6f7d63; font-size: 10px; }
 .last-run { border: 0; background: transparent; padding: 0; text-align: left; }
 .last-run-time { font-size: 11px; color: #617154; display: block; }

@@ -10,6 +10,11 @@ test('today completion comes from independent markers, never inferred from recen
   assert.equal(requestPresentation({...base,todayState:'completed',lastRun:{status:'failed'}}).label,'今日已完成')
 })
 test('credential pause, own disablement and day markers stay independent', () => {
+  assert.equal(requestPresentation({...base,enabled:0}).tone,'disabled')
+  assert.equal(requestPresentation(base,false).tone,'disabled')
+  assert.equal(requestPresentation(base,true,false).tone,'disabled')
+  assert.equal(requestPresentation(base).tone,'muted')
+  assert.equal(requestPresentation({...base,todayState:'completed',enabled:0}).tone,'good')
   assert.equal(requestPresentation({...base,todayState:'completed',authPaused:1}).label,'凭证已暂停')
   assert.match(requestPresentation({...base,todayState:'completed',enabled:0}).caption,/已禁用/)
   assert.equal(requestPresentation({...base,todayState:'pending',enabled:0}).label,'今日待确认')

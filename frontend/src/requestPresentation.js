@@ -6,7 +6,7 @@ export function requestPresentation(request, accountEnabled = true, platformEnab
   if (['queued', 'running'].includes(request.lastRun?.status)) return { label: request.lastRun.status === 'running' ? '正在执行' : '排队中', icon: 'clock', tone: 'active', caption: disabled ? '已禁用 · 活动任务由服务端处理' : '同一请求不会重复入队' }
   if (request.todayState === 'pending') return { label: '今日待确认', icon: 'alert', tone: 'warning', caption: disabled ? '已禁用 · 仍需核对平台结果' : '先核对结果，不自动重发' }
   if (request.todayState === 'completed') return { label: '今日已完成', icon: 'check', tone: 'good', caption: disabled ? '已禁用 · 日标记保留' : '日标记不随记录清理' }
-  if (disabled) return { label: '已禁用', icon: 'pause', tone: 'muted', caption: !platformEnabled ? '平台未启用' : !accountEnabled ? '账号未启用' : '请求未启用' }
+  if (disabled) return { label: '已禁用', icon: 'pause', tone: 'disabled', caption: !platformEnabled ? '平台未启用' : !accountEnabled ? '账号未启用' : '请求未启用' }
   return { label: '今日未完成', icon: 'clock', tone: 'muted', caption: '无今日完成或待确认标记' }
 }
 export function attentionRequests(platforms) {
