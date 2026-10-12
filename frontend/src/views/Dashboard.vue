@@ -2,6 +2,7 @@
 import { computed, onUnmounted, reactive, ref } from 'vue'
 import { api, periodic, execute, report, confirm, dateTime } from '../api'
 import { attentionRequests, platformLocation } from '../requestPresentation'
+import { useManualRefresh } from '../composables/useManualRefresh'
 import DeskIcon from '../components/DeskIcon.vue'
 import StatusChip from '../components/StatusChip.vue'
 import RunDetailDrawer from '../components/RunDetailDrawer.vue'
@@ -19,6 +20,7 @@ async function load() {
     state.value = dashboard; platforms.value = catalogue; error.value = ''
   } catch (e) { if (!disposed && current === sequence) error.value = e.message }
 }
+const { refreshing, refresh } = useManualRefresh(load)
 periodic(load, 3000)
 onUnmounted(() => { disposed = true; sequence++; runDrawer.visible = false; batchDrawer.visible = false })
 async function executeAll() { if (executing.value) return; executing.value = true; try { await execute('all'); await load() } finally { executing.value = false } }
@@ -31,7 +33,7 @@ function showBatch(id) { Object.assign(batchDrawer, { visible: true, id }) }
 function planTime(value, timezone) { return new Intl.DateTimeFormat('zh-CN', { timeZone: timezone, hour:'2-digit',minute:'2-digit',hour12:false }).format(new Date(value)) }
 </script>
 <template>
-  <div class="page-heading"><div><h1>今日概览</h1><p class="page-subtitle">今天的任务、需要关注的结果，以及接下来的安排。</p></div><div class="heading-actions"><el-button @click="load"><DeskIcon name="refresh" />刷新</el-button><el-button type="primary" :loading="executing" @click="executeAll"><DeskIcon name="play" />执行全部平台</el-button></div></div>
+  <div class="page-heading"><div><h1>今日概览</h1><p class="page-subtitle">今天的任务、需要关注的结果，以及接下来的安排。</p></div><div class="heading-actions"><el-button :disabled="refreshing" :aria-busy="refreshing" @click="refresh"><DeskIcon name="refresh" class="refresh-icon" :class="{ 'is-refreshing': refreshing }" />刷新</el-button><el-button type="primary" :loading="executing" @click="executeAll"><DeskIcon name="play" />执行全部平台</el-button></div></div>
   <el-alert v-if="error" :title="error" type="error" :closable="false" class="space-top" />
   <template v-if="state">
     <div class="kpi-row" aria-label="工作区统计">

@@ -3,6 +3,7 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, periodic, labels, dateTime } from '../api'
 import { platformLocation } from '../requestPresentation'
+import { useManualRefresh } from '../composables/useManualRefresh'
 import DeskIcon from '../components/DeskIcon.vue'
 import StatusChip from '../components/StatusChip.vue'
 import RunDetailDrawer from '../components/RunDetailDrawer.vue'
@@ -24,6 +25,7 @@ async function load() {
   } catch(e) { if(!disposed && current===sequence) error.value=e.message }
   finally { if(!disposed && current===sequence) loading.value=false }
 }
+const { refreshing, refresh } = useManualRefresh(load)
 periodic(load,3000)
 onUnmounted(()=> {disposed=true;sequence++;runDrawer.visible=false;batchDrawer.visible=false})
 function changeFilter() {filter.page=1;keyword.value='';load();router.replace({path:'/runs',query:{...(filter.platformId?{platformId:filter.platformId}:{}),...(filter.status?{status:filter.status}:{}),...(filter.source?{source:filter.source}:{})}})}
@@ -33,7 +35,7 @@ watch(()=>route.query.runId,id=> {if(id) show(String(id))},{immediate:true})
 function reset(){Object.assign(filter,{platformId:'',status:'',source:'',page:1});changeFilter()}
 </script>
 <template>
-  <div class="page-heading"><div><h1>执行记录</h1><p class="page-subtitle">每一次请求都有记录。先查看结果，再决定下一步。</p></div><el-button :loading="loading" @click="load"><DeskIcon name="refresh" />刷新记录</el-button></div>
+  <div class="page-heading"><div><h1>执行记录</h1><p class="page-subtitle">每一次请求都有记录。先查看结果，再决定下一步。</p></div><el-button :disabled="refreshing" :aria-busy="refreshing" @click="refresh"><DeskIcon name="refresh" class="refresh-icon" :class="{ 'is-refreshing': refreshing }" />刷新记录</el-button></div>
   <el-alert v-if="error" :title="error" type="error" :closable="false" class="space-top" />
   <div v-if="active.length" class="banner"><DeskIcon name="clock" /><div class="banner-copy"><strong>{{ active.length }} 个活动批次</strong><p>请求由服务器持久队列执行，关闭网页不会取消。</p></div><el-dropdown trigger="click"><el-button size="small">查看队列</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="batch in active" :key="batch.id" @click="showBatch(batch.id)">{{ batch.name }} · {{ batch.done }}/{{ batch.total }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div>
   <section class="panel flush records-panel">

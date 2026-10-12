@@ -92,6 +92,7 @@ h3 { font-size: 13px; font-weight: 500; }
 .status-chip.queued, .status-chip.running { color: var(--blue); }
 .status-chip.cancelled, .status-chip.skipped { color: var(--muted); }
 .status-chip.running .icon { animation: spin 2s linear infinite; }
+.refresh-icon.is-refreshing { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .kpi-row { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); background: white; border: 1px solid var(--line); border-radius: 11px; padding: 22px 0; margin-bottom: 22px; }
 .kpi { padding: 0 25px; text-align: left; border: 0; background: transparent; min-width: 0; color: var(--ink); }
