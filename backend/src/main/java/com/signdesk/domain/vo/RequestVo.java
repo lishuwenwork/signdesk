@@ -14,6 +14,7 @@ public class RequestVo {
     private Integer enabled;
     private Integer currentRevision;
     private ResultRules rules;
+    private String templateId;
     private Integer authPaused;
     private Integer sortOrder;
     private Integer version;

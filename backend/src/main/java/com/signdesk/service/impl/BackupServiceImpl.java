@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.signdesk.common.*;
 import com.signdesk.converter.ScheduleConverter;
 import com.signdesk.domain.*;
+import com.signdesk.domain.model.RequestRuleConfig;
 import com.signdesk.domain.bo.*;
 import com.signdesk.domain.vo.*;
 import com.signdesk.engine.*;
@@ -87,17 +88,13 @@ public class BackupServiceImpl implements IBackupService {
                                 new LambdaQueryWrapper<RequestDefinition>()
                                         .orderByAsc(RequestDefinition::getId))
                         .stream()
-                        .map(
-                                r ->
-                                        new BackupFile.RequestEntry(
-                                                r.getId(),
-                                                r.getAccountId(),
-                                                r.getName(),
-                                                Checks.flag(r.getEnabled()),
-                                                Checks.flag(r.getAuthPaused()),
-                                                r.getSortOrder(),
-                                                Json.read(r.getRulesJson(), ResultRules.class),
-                                                current.get(r.getId())))
+                        .map(r -> {
+                            var config = RequestRuleConfig.read(r.getRulesJson());
+                            return new BackupFile.RequestEntry(
+                                    r.getId(), r.getAccountId(), r.getName(),
+                                    Checks.flag(r.getEnabled()), Checks.flag(r.getAuthPaused()),
+                                    r.getSortOrder(), config.rules(), current.get(r.getId()), config.templateId());
+                        })
                         .toList();
         var ts =
                 templates
@@ -222,7 +219,7 @@ public class BackupServiceImpl implements IBackupService {
                             r.setName(b.name());
                             r.setEnabled(spec != null && b.enabled() ? 1 : 0);
                             r.setCurrentRevision(1);
-                            r.setRulesJson(Json.write(b.rules()));
+                            r.setRulesJson(new RequestRuleConfig(b.rules(), b.templateId()).toJson());
                             r.setAuthPaused(spec == null || b.authPaused() ? 1 : 0);
                             r.setSortOrder(b.sortOrder());
                             r.setVersion(1);

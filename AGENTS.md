@@ -2,7 +2,7 @@
 
 ## 项目状态与文档入口
 
-截至 2026-10-09，后端分层、持久队列、全新 SQLite 基线、明文配置备份及前端适配已在主工作区完成；本地构建验证通过。浏览器 E2E 尚未实际运行，因此 P6 尚有验收阻塞。代码集成在 `refactor/backend-ruoyi-style` 主工作区，HEAD `475c46a` 是本轮实现前的基线，当前实现未提交；是否提交或推送由用户决定。详细证据与限制见 [验证记录](docs/validation.md)。
+截至 2026-10-11，后端分层、持久队列、全新 SQLite 基线、明文配置备份、正式前端、单管理员登录及结果规则/模板批量关联应用已在主工作区实现。最新隔离发布后端 149/149、前端单元 46/46，通过；单弹框修复包真实浏览器全量 68/68 通过，本地浏览器验收阻塞已解除；后续间距与关闭增量的专项验证另见验证记录末节，不沿用 68/68 作为新包全量结果。代码位于 `refactor/backend-ruoyi-style`，本轮增量基线 HEAD `029424a`，当前增量未提交/推送；`475c46a` 为历史重构基线。是否提交或推送由用户决定。详细失败过程、产物及未验证范围见 [验证记录](docs/validation.md)。
 
 - 用户需求、验收状态：[docs/requirements.md](docs/requirements.md)。
 - 当前后端实现结构与数据模型：[docs/architecture.md](docs/architecture.md)。
@@ -15,7 +15,7 @@
 
 保留 Java 21、Spring Boot 4 / Spring MVC、SQLite、MyBatis-Plus、Hutool HTTP、Vue 3 / JavaScript。同仓库前后端，正式发布为单 JAR；SQLite 位于 JAR 外的本地数据目录。
 
-当前实现采用 9 个 Controller、10 组 `IXxxService` / `XxxServiceImpl`（platform、account、request、requestTemplate、schedule、run、runRecord、settings、backup、system），Entity 私有字段与 Lombok，BO/VO 分离。普通 CRUD 使用 MP 原生 `BaseMapper`、Lambda Wrapper 和乐观锁；复杂 SQLite 操作放入专用 Mapper XML。具体职责和生产 XML 清单见架构文档。
+当前实现采用 10 个 Controller、11 组 `IXxxService` / `XxxServiceImpl`（原 platform、account、request、requestTemplate、schedule、run、runRecord、settings、backup、system，另增 auth），Entity 私有字段与 Lombok，BO/VO 分离。普通 CRUD 使用 MP 原生 `BaseMapper`、Lambda Wrapper 和乐观锁；复杂 SQLite 操作放入专用 Mapper XML。具体职责和生产 XML 清单见架构文档。
 
 持续遵守以下边界：
 
@@ -60,4 +60,4 @@
 - 完整发布：仓库根目录 `node scripts/build.mjs`，包含本轮前端资源、后端测试和单 JAR 打包。
 - 浏览器：安装 Chromium 或配置 `SIGNDESK_TEST_BROWSER`，在 `frontend` 运行 `npm run test:e2e`；只使用 18080 隔离后端、18081 本地 fixture 和临时数据目录。
 
-调度边界使用注入的 Clock；涉及持久化时测试真实 SQLite。未运行、工具拒绝、失败或仅收集测试清单均需如实报告，不修改权限配置来绕过限制。当前唯一明确的重构验收阻塞为浏览器 E2E 实际尚未运行；Docker 实际构建/运行、线上 CI、真实平台和 24 小时观测也未验证。以 [验证记录](docs/validation.md) 中逐项事实为准。
+调度边界使用注入的 Clock；涉及持久化时测试真实 SQLite。未运行、工具拒绝、失败或仅收集测试清单均需如实报告，不修改权限配置来绕过限制。单弹框修复包本地真实浏览器全量 68/68 通过，原浏览器未运行阻塞已解除；追加关闭修复新包模板专项 18/18，通过，未重跑全站全部用例（间距包专项 11/11 见历史章节）。Docker 实际构建/运行、线上 CI、真实平台和 24 小时观测仍未验证。以 [验证记录](docs/validation.md) 中逐项事实为准。

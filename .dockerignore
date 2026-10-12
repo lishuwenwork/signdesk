@@ -9,4 +9,5 @@ backend/src/main/resources/static
 **/*.db*
 **/*.key
 .env
+.env.*
 dist

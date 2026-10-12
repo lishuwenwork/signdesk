@@ -38,6 +38,20 @@ public class RequestTemplateController {
         return new SavedVo(true);
     }
 
+    @GetMapping("/platforms/{platformId}/templates/{id}/requests")
+    public TemplateApplyPreviewVo previewApplication(
+            @PathVariable String platformId, @PathVariable String id,
+            @RequestParam(defaultValue = "selected") String mode) {
+        return service.previewApplication(platformId, id, mode);
+    }
+
+    @PostMapping("/platforms/{platformId}/templates/{id}/apply")
+    public TemplateAppliedVo apply(
+            @PathVariable String platformId, @PathVariable String id,
+            @Valid @RequestBody TemplateApplyBo b) {
+        return service.apply(platformId, id, b);
+    }
+
     @DeleteMapping("/platforms/{platformId}/templates/{id}")
     public DeletedVo delete(@PathVariable String platformId, @PathVariable String id) {
         service.delete(platformId, id);

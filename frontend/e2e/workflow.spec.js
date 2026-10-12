@@ -50,7 +50,9 @@ async function restoreBackup(page, backup) {
   await expect(confirmation).toContainText('不是合并')
   const confirmReplace = confirmation.getByRole('button', { name: '确认整体替换', exact: true })
   await expect(confirmReplace).toBeDisabled()
-  await confirmation.getByRole('checkbox', { name: '我理解这是整体替换，而不是合并', exact: true }).check()
+  const consent = confirmation.getByRole('checkbox', { name: '我理解这是整体替换，而不是合并', exact: true })
+  await confirmation.locator('.el-checkbox').click()
+  await expect(consent).toBeChecked()
   const importRequest = page.waitForRequest((r) => new URL(r.url()).pathname === '/api/backups/import')
   await confirmReplace.click()
   expect((await importRequest).postDataJSON()).toEqual({ backup, replace: true })
@@ -104,10 +106,11 @@ test('manage, import, send, update, schedule, and export through the real web UI
     body: '{"value":"original"}',
   })
   await page.getByRole('button', { name: '详情' }).first().click()
-  await expect(page.locator('.el-drawer')).toContainText('命中成功规则')
-  await page.locator('.el-drawer').getByRole('button', { name: '响应体', exact: true }).click()
+  const executionDrawer = page.getByRole('dialog', { name: '执行记录详情', exact: true })
+  await expect(executionDrawer).toContainText('命中成功规则')
+  await executionDrawer.getByRole('button', { name: '响应体', exact: true }).click()
   await expect(page.getByTestId('response-body')).toHaveText('{"code":0}')
-  await page.locator('.el-drawer__close-btn').click()
+  await executionDrawer.getByRole('button', { name: '关闭', exact: true }).click()
   await expect(page.getByTestId('response-body')).toHaveCount(0)
   await page.getByRole('link', { name: '平台与账号', exact: true }).click()
   await page.locator('.platform-choice').filter({ hasText: '回显测试平台' }).click()
@@ -201,6 +204,8 @@ test('manage, import, send, update, schedule, and export through the real web UI
   await placeholderRow.getByRole('button', { name: `${savedRequest.name}的更多操作`, exact: true }).click()
   await expect(page.getByRole('menuitem', { name: '查看完整请求', exact: true })).toBeDisabled()
   await page.keyboard.press('Escape')
+  await page.getByRole('heading', { name: '平台与账号', exact: true }).click()
+  await expect(page.locator('[role="menu"]:visible')).toHaveCount(0)
   const updateCurl = placeholderRow.getByRole('button', { name: '更新 cURL', exact: true })
   await expect(updateCurl).toBeEnabled()
   await updateCurl.click()
@@ -253,38 +258,43 @@ test('write boundaries reject cross-site and form requests without adding login'
 
 test('saved HTTP proxy survives page reload and routes the next execution', async ({ page, request }) => {
   const previous = await (await request.get('/api/settings')).json()
-  await page.goto('/#/settings?tab=proxy')
-  await page.getByRole('radio', { name: /HTTP 代理/ }).check()
-  await page.getByRole('textbox', { name: '代理主机', exact: true }).fill('127.0.0.1')
-  await page.getByRole('spinbutton', { name: '代理端口', exact: true }).fill('18081')
-  await page.getByRole('button', { name: '保存设置', exact: true }).click()
-  await expect(page.getByText('设置已保存', { exact: true })).toBeVisible()
-  await page.reload()
-  await expect(page.getByRole('textbox', { name: '代理主机', exact: true })).toHaveValue('127.0.0.1')
-  await expect(page.getByRole('spinbutton', { name: '代理端口', exact: true })).toHaveValue('18081')
-  const saved = await (await request.get('/api/settings')).json()
-  expect(saved.proxy).toEqual({ mode: 'http', host: '127.0.0.1', port: 18081 })
+  try {
+    await page.goto('/#/settings?tab=proxy')
+    const proxyMode = page.getByRole('radio', { name: /HTTP 代理/ })
+    await page.locator('.el-radio').filter({ has: proxyMode }).click()
+    await expect(proxyMode).toBeChecked()
+    await page.getByRole('textbox', { name: '代理主机', exact: true }).fill('127.0.0.1')
+    await page.getByRole('spinbutton', { name: '代理端口', exact: true }).fill('18081')
+    await page.getByRole('button', { name: '保存设置', exact: true }).click()
+    await expect(page.getByText('设置已保存', { exact: true })).toBeVisible()
+    await page.reload()
+    await expect(page.getByRole('textbox', { name: '代理主机', exact: true })).toHaveValue('127.0.0.1')
+    await expect(page.getByRole('spinbutton', { name: '代理端口', exact: true })).toHaveValue('18081')
+    const saved = await (await request.get('/api/settings')).json()
+    expect(saved.proxy).toEqual({ mode: 'http', host: '127.0.0.1', port: 18081 })
 
-  const platform = await (await request.post('/api/platforms', {
-    data: { name: '代理测试平台', note: '', enabled: true, version: 1 },
-  })).json()
-  createdPlatforms.add(platform.id)
-  const account = await (await request.post(`/api/platforms/${platform.id}/accounts`, {
-    data: { alias: '代理测试账号', enabled: true, version: 1 },
-  })).json()
-  const created = await (await request.post(`/api/accounts/${account.id}/requests`, {
-    data: { name: '代理请求', enabled: true, curl: "curl 'http://127.0.0.1:1/check?proxy=on'" },
-  })).json()
-  const run = await (await request.post('/api/runs', {
-    data: { scope: 'request', id: created.id, force: false, key: 'proxy-browser-fixture' },
-  })).json()
-  await expect.poll(async () => {
-    const batch = await (await request.get(`/api/batches/${run.batchIds[0]}`)).json()
-    return batch.items[0].status
-  }).toBe('success')
-  const received = await (await request.get('http://127.0.0.1:18081/received')).json()
-  expect(received.at(-1).url).toBe('http://127.0.0.1:1/check?proxy=on')
-  const current = await (await request.get('/api/settings')).json()
-  const restored = await request.put('/api/settings', { data: { ...previous, version: current.version } })
-  expect(restored.ok()).toBe(true)
+    const platform = await (await request.post('/api/platforms', {
+      data: { name: '代理测试平台', note: '', enabled: true, version: 1 },
+    })).json()
+    createdPlatforms.add(platform.id)
+    const account = await (await request.post(`/api/platforms/${platform.id}/accounts`, {
+      data: { alias: '代理测试账号', enabled: true, version: 1 },
+    })).json()
+    const created = await (await request.post(`/api/accounts/${account.id}/requests`, {
+      data: { name: '代理请求', enabled: true, curl: "curl 'http://127.0.0.1:1/check?proxy=on'" },
+    })).json()
+    const run = await (await request.post('/api/runs', {
+      data: { scope: 'request', id: created.id, force: false, key: 'proxy-browser-fixture' },
+    })).json()
+    await expect.poll(async () => {
+      const batch = await (await request.get(`/api/batches/${run.batchIds[0]}`)).json()
+      return batch.items[0].status
+    }).toBe('success')
+    const received = await (await request.get('http://127.0.0.1:18081/received')).json()
+    expect(received.at(-1).url).toBe('http://127.0.0.1:1/check?proxy=on')
+  } finally {
+    const current = await (await request.get('/api/settings')).json()
+    const restored = await request.put('/api/settings', { data: { ...previous, version: current.version } })
+    expect(restored.ok()).toBe(true)
+  }
 })

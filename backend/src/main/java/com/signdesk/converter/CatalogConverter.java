@@ -2,6 +2,7 @@ package com.signdesk.converter;
 
 import com.signdesk.common.Json;
 import com.signdesk.domain.*;
+import com.signdesk.domain.model.RequestRuleConfig;
 import com.signdesk.domain.vo.*;
 import com.signdesk.engine.ResultRules;
 
@@ -41,7 +42,9 @@ public final class CatalogConverter {
         v.setName(r.getName());
         v.setEnabled(r.getEnabled());
         v.setCurrentRevision(r.getCurrentRevision());
-        v.setRules(Json.read(r.getRulesJson(), ResultRules.class));
+        var config = RequestRuleConfig.read(r.getRulesJson());
+        v.setRules(config.rules());
+        v.setTemplateId(config.templateId());
         v.setAuthPaused(r.getAuthPaused());
         v.setSortOrder(r.getSortOrder());
         v.setVersion(r.getVersion());

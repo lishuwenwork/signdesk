@@ -13,4 +13,5 @@ public class RequestTemplateVo {
     private String name;
     private ResultRules rules;
     private Integer version;
+    private int linkedRequestCount;
 }

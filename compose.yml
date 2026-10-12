@@ -1,19 +1,37 @@
 services:
   signdesk:
+    image: ${SIGNDESK_IMAGE:-signdesk:0.1.0}
     build: .
+    pull_policy: never
     ports:
-      # Host and container ports must match: RequestBoundary compares the browser
-      # Origin port with the port Tomcat received the request on.
-      - "127.0.0.1:${SIGNDESK_PORT:-10500}:${SIGNDESK_PORT:-10500}"
+      # Host and container ports must match for browser Origin validation.
+      - "${SIGNDESK_PUBLISH_ADDRESS:-0.0.0.0}:${SIGNDESK_PORT:-10500}:${SIGNDESK_PORT:-10500}"
     environment:
+      SIGNDESK_BIND_ADDRESS: 0.0.0.0
       SIGNDESK_PORT: ${SIGNDESK_PORT:-10500}
+      SIGNDESK_DATA_DIR: /app/data
       SIGNDESK_ALLOWED_HOSTS: ${SIGNDESK_ALLOWED_HOSTS:-}
       SIGNDESK_AUTH_USERNAME: ${SIGNDESK_AUTH_USERNAME:-admin}
-      SIGNDESK_AUTH_PASSWORD: ${SIGNDESK_AUTH_PASSWORD:-123456}
+      SIGNDESK_AUTH_PASSWORD: ${SIGNDESK_AUTH_PASSWORD:?Set SIGNDESK_AUTH_PASSWORD in .env before deployment}
       SERVER_SERVLET_SESSION_COOKIE_SECURE: ${SERVER_SERVLET_SESSION_COOKIE_SECURE:-false}
     volumes:
-      - signdesk-data:/app/data
+      # A missing path must fail instead of creating a root-owned empty data directory.
+      - type: bind
+        source: ${SIGNDESK_HOST_DATA:-${HOME}/.signdesk/data}
+        target: /app/data
+        bind:
+          create_host_path: false
     restart: unless-stopped
-    stop_grace_period: 35s
-volumes:
-  signdesk-data:
+    stop_grace_period: 40s
+    mem_limit: 512m
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS --max-time 3 http://127.0.0.1:$${SIGNDESK_PORT}/api/health > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

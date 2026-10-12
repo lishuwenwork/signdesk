@@ -13,7 +13,7 @@ COPY backend/src ./src
 COPY --from=web /build/frontend/dist ./src/main/resources/static
 RUN mvn -B verify
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre-noble
 WORKDIR /app
 RUN mkdir -p data && chown 10001:10001 data
 COPY --from=java /build/backend/target/signdesk-0.1.0.jar ./signdesk.jar

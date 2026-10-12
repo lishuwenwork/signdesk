@@ -249,6 +249,106 @@ class WebContractIntegrationTest {
     }
 
     @Test
+    void inverseRulesAreValidatedPreservedAndSharedByTrialAndExecution() throws Exception {
+        var hits = new java.util.concurrent.atomic.AtomicInteger();
+        var fixture = HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        String body = "{\"code\":99}";
+        fixture.createContext("/inverse", e -> {
+            hits.incrementAndGet();
+            byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            e.sendResponseHeaders(200, bytes.length);
+            e.getResponseBody().write(bytes);
+            e.close();
+        });
+        fixture.start();
+        try {
+            var rules = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+            var trial = post("/rules/test", Map.of("rules", rules, "httpStatus", 200, "body", body));
+            assertEquals(200, trial.statusCode());
+            assertEquals("failed", Json.tree(trial.body()).path("status").asString());
+            assertEquals(0, hits.get(), "trial must not send HTTP");
+            String platform = addPlatform("反向规则接口", "", true);
+            String account = addAccount(platform, "本地反向账号", true);
+            String curl = "curl 'http://127.0.0.1:" + fixture.getAddress().getPort() + "/inverse'";
+            var created = post("/accounts/" + account + "/requests", Map.of("name", "反向请求", "curl", curl, "enabled", true, "rules", rules));
+            assertEquals(200, created.statusCode());
+            String request = Json.tree(created.body()).path("id").asString();
+            var template = post("/platforms/" + platform + "/templates", Map.of("name", "反向模板", "rules", rules));
+            assertEquals(200, template.statusCode());
+            var fetchedTemplate = Json.tree(call("GET", "/platforms/" + platform + "/templates", null).body()).get(0);
+            assertTrue(fetchedTemplate.path("rules").path("failureOnSuccessMismatch").asBoolean());
+            var tree = Json.tree(call("GET", "/platforms", null).body());
+            var saved = tree.valueStream().filter(p -> p.path("id").asString().equals(platform)).findFirst().orElseThrow()
+                    .path("accounts").get(0).path("requests").get(0);
+            assertTrue(saved.path("rules").path("failureOnSuccessMismatch").asBoolean());
+            var invalid = new ResultRules(new ResultRules.Match("code", null, null), null, null, null, true);
+            assertEquals(400, post("/rules/test", Map.of("rules", invalid, "httpStatus", 200, "body", body)).statusCode());
+            assertEquals(400, post("/platforms/" + platform + "/templates", Map.of("name", "错误模板", "rules", invalid)).statusCode());
+            assertEquals(400, call("PUT", "/requests/" + request, Map.of("name", "错误配置", "enabled", true, "rules", invalid, "version", 1)).statusCode());
+            assertEquals(0, hits.get());
+            var accepted = post("/runs", new ManualRunBo("request", request, false, "inverse-api-fixture"));
+            assertEquals(202, accepted.statusCode());
+            String batch = Json.tree(accepted.body()).path("batchIds").get(0).asString();
+            String actual = null;
+            long until = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+            while (System.nanoTime() < until) {
+                var current = Json.tree(call("GET", "/batches/" + batch, null).body());
+                if (current.path("status").asString().equals("completed")) {
+                    actual = current.path("items").get(0).path("status").asString();
+                    break;
+                }
+                Thread.sleep(30);
+            }
+            assertEquals("failed", actual);
+            assertEquals(1, hits.get());
+        } finally { fixture.stop(0); }
+    }
+
+    @Test
+    void templateApplicationApisPreserveScopeVersionsLinksAndSensitiveRequestBoundaries() throws Exception {
+        String platform = addPlatform("批量应用接口平台", "", true);
+        String other = addPlatform("批量应用隔离平台", "", true);
+        String account = addAccount(platform, "批量应用账号", true);
+        String request = addRequest(account, "不改名称", "curl 'http://127.0.0.1:1/check' -H 'Cookie: api-template-only-secret'", ResultRules.defaults(), false);
+        var rules = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        String path = "/platforms/" + platform + "/templates";
+        var created = post(path, Map.of("name", "批量模板", "rules", rules));
+        String id = Json.tree(created.body()).path("id").asString();
+        String previewPath = path + "/" + id + "/requests";
+        var preview = call("GET", previewPath + "?mode=selected", null);
+        assertEquals(200, preview.statusCode());
+        assertFalse(preview.body().contains("api-template-only-secret"));
+        var row = Json.tree(preview.body()).path("requests").get(0);
+        assertFalse(row.path("enabled").asBoolean());
+        assertTrue(row.path("rawCurl").isMissingNode());
+        assertTrue(row.path("rules").isMissingNode());
+        assertEquals(404, call("GET", "/platforms/" + other + "/templates/" + id + "/requests", null).statusCode());
+        assertEquals(400, call("GET", previewPath + "?mode=invalid", null).statusCode());
+        String applyPath = path + "/" + id + "/apply";
+        var input = new TemplateApplyBo("selected", 1, java.util.List.of(new TemplateApplyBo.Target(request, 1)));
+        var applied = post(applyPath, input);
+        assertEquals(200, applied.statusCode());
+        assertEquals(1, Json.tree(applied.body()).path("applied").asInt());
+        assertEquals(1, Json.tree(applied.body()).path("newlyLinked").asInt());
+        assertEquals(409, post(applyPath, input).statusCode());
+        assertEquals(400, post(applyPath, new TemplateApplyBo("selected", 1, java.util.List.of())).statusCode());
+        assertEquals(400, post(applyPath, new TemplateApplyBo("selected", 1,
+                java.util.List.of(new TemplateApplyBo.Target(request, 0)))).statusCode());
+        var linked = Json.tree(call("GET", previewPath + "?mode=linked", null).body());
+        assertEquals(1, linked.path("requests").size());
+        assertEquals(id, linked.path("requests").get(0).path("templateId").asString());
+        assertEquals(2, linked.path("requests").get(0).path("version").asInt());
+        assertEquals(1, Json.tree(call("GET", path, null).body()).get(0).path("linkedRequestCount").asInt());
+        var linkedCreate = post("/accounts/" + account + "/requests", Map.of("name", "新建关联", "curl", "curl 'http://127.0.0.1:1/check'", "enabled", false, "rules", rules, "templateId", id));
+        assertEquals(200, linkedCreate.statusCode());
+        assertEquals(2, Json.tree(call("GET", previewPath + "?mode=linked", null).body()).path("requests").size());
+        var unlinked = call("PUT", "/requests/" + request,
+                Map.of("name", "不改名称", "enabled", false, "rules", rules, "version", 2, "unlinkTemplate", true));
+        assertEquals(200, unlinked.statusCode());
+        assertEquals(1, Json.tree(call("GET", previewPath + "?mode=linked", null).body()).path("requests").size());
+    }
+
+    @Test
     void templateApiValidatesScopeAndVersionsWithoutExposingRequestContent() throws Exception {
         String platform = addPlatform("接口模板测试", "", true);
         String other = addPlatform("隔离平台", "", true);

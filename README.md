@@ -125,14 +125,16 @@ mvn -f backend/pom.xml -Pjib clean verify
 
 命令会隔离构建最新前端、运行前后端测试、打包 JAR，并生成 `backend/target/jib/signdesk-0.1.0-linux-amd64.tar`，镜像标签为 `signdesk:0.1.0`，不推送镜像仓库。ARM64 服务器使用 `-Dsigndesk.image.architecture=arm64`。
 
-上传 tar、`compose.image.yml` 和 `.env.image.example`，把后者复制为 `.env` 并设置宿主机数据目录（默认 `$HOME/.signdesk/data`，例如可改为 `/root/signdesk/data`），再按[完整部署说明](docs/docker-jib.md)把该目录初始化为容器用户 `10001:10001` 可写，然后在 Linux 服务器执行：
+上传 tar、`compose.yml` 和 `.env.example`，把后者复制为 `.env`，设置 `SIGNDESK_HOST_DATA=/root/signdesk/data` 并填写强管理员密码（`SIGNDESK_AUTH_PASSWORD` 留空会被 Compose 拒绝）。再按[完整 Docker 部署与更新说明](docs/docker-jib.md)初始化数据目录的 `10001:10001` 权限，然后在 Linux 服务器执行：
 
 ```bash
 docker load -i signdesk-0.1.0-linux-amd64.tar
-docker compose -f compose.image.yml up -d
+docker compose up -d --no-build
 ```
 
-镜像包含 Java 21 和生产前端，服务器不需要 Java、Node 或源码。容器内数据目录固定为 `/app/data`，宿主机实际路径由 `SIGNDESK_HOST_DATA` 决定，二者用绑定挂载关联。生产页面与 API 都由 `10500` 提供，`9500` 仅用于前端开发。默认端口只发布到服务器本机，请通过 SSH 隧道或可信入口访问；管理页面需要管理员登录，远程部署前修改初始密码。镜像不会携带本地数据库或凭证。tar 构建成功不代表 Linux 容器/E2E 已验收，实际结果见[验证记录](docs/validation.md)。
+Jib 镜像部署与 Dockerfile 源码构建共用这一份 `compose.yml` 和 `.env.example`；只有构建方式不同。源码构建时在完整仓库执行 `docker compose up -d --build`，数据仍使用同一宿主机绑定目录；上传 tar 的服务器不需要源码，必须使用 `--no-build`，不要尝试本地构建或拉取应用镜像。
+
+镜像包含 Java 21 和生产前端，服务器不需要 Java、Node 或源码。容器内数据目录固定为 `/app/data`，宿主机实际路径由 `SIGNDESK_HOST_DATA` 决定，二者用绑定挂载关联。生产页面与 API 都由 `10500` 提供，`9500` 仅用于前端开发。Docker 默认发布到 `0.0.0.0:10500`，放通服务器 TCP 10500 后可访问 `http://服务器公网IP:10500`，使用 `.env` 中的管理员账号/密码登录。Compose 不再回退到 `123456`，必须显式填写密码；公网 HTTP 不加密密码和会话，长期使用应接入 HTTPS。需要仅本机访问时将 `SIGNDESK_PUBLISH_ADDRESS=127.0.0.1`。完整打包、部署、备份、更新与回退步骤见 [Docker 部署文档](docs/docker-jib.md)。镜像不会携带本地数据库或部署凭证；配置变更不代表服务器已经部署，实际验证边界见 [验证记录](docs/validation.md)。
 
 ## 首次配置与执行
 
@@ -142,6 +144,19 @@ docker compose -f compose.image.yml up -d
 4. 手动执行并检查结果，再配置平台计划。
 
 HTTP 401 或用户定义的过期规则会暂停对应凭证，请更新 cURL 后再执行。超时、连接中断、响应不完整或无法分类的结果为待确认/unknown，不自动重试。手动重新执行可以忽略当日完成/待确认标记，但不能绕过平台、账号、请求启停或凭证暂停。
+
+### 结果规则与模板批量应用
+
+成功规则通常只需配置 JSON 字段等于某个值，例如数字 `code=0` 或布尔 `success=true`。可明确开启“非成功值视为业务失败”：只有字段存在、类型相符但值不同才判为失败，无需枚举全部错误码；字段缺失、类型不符、响应不完整仍为待确认。开关默认关闭，仅适用于纯 JSON 字段等值成功规则，不适用于 null、纯文本或字段附加文本条件。
+
+完整 2xx 响应优先判断凭证过期、已完成，再判断显式失败、成功和反向失败。因此 `{"message":"今日已签到","success":false}` 可用 message 识别已完成，不会被通用的 `success=false` 失败条件抢先覆盖。
+
+修改并保存接口模板后，在模板卡片选择：
+
+- **选择请求应用**：手动勾选同平台请求，确认覆盖其结果规则，并与该模板建立关联；已关联其他模板的请求会明确提示改绑。
+- **应用到已关联请求**：预览所有已关联请求后，一次确认更新，无需重新勾选。
+
+两种方式都不改请求名称、cURL、启停、凭证暂停或日标记，不发送请求，也不改变已排队的规则副本。模板或请求版本/关联范围变动时整批拒绝，刷新预览后再确认。新建请求选择模板会自动建立关联；旧版请求没有来源记录，需要首次手动选择。请求规则编辑页可解除关联并保留规则；删除模板也只解除关联，保留请求配置。关联信息随两种备份导出/恢复，存储在现有请求配置 JSON 中，不修改数据库表结构。新版本兼容读取旧配置，但不保证旧 JAR 能读取新增选项/关联配置，升级后不要用旧 JAR 验收或直接降级。
 
 ### cURL 支持边界
 
@@ -188,7 +203,7 @@ HTTP 契约：
 
 原始 cURL 与结构化请求写入 SQLite 明文；响应字节以 BLOB 保存。程序不把完整请求、响应正文、备份内容或 SQL 参数写入应用日志。SQLite 文件和完整配置文件仍可能含敏感内容，必须依靠操作系统文件权限和可信备份管理保护。
 
-默认监听本机 `127.0.0.1`，管理 API 使用 Session 鉴权，无用户表或 JWT。登录不能代替 HTTPS、文件权限和网络隔离；远程使用应修改默认密码并置于可信入口之后，不要直接公开明文 HTTP 管理端口。默认网络策略阻止本机、内网、链路本地及云元数据地址；个人内部目标仅能按明确主机白名单放行，云元数据目标始终阻止。
+直接启动 JAR 默认监听本机 `127.0.0.1`；Docker Compose 默认发布到 `0.0.0.0`，通过 `SIGNDESK_PUBLISH_ADDRESS` 控制宿主机监听地址。管理 API 使用 Session 鉴权，无用户表或 JWT。登录不能代替 HTTPS、文件权限和网络隔离，公网 HTTP 会明文传输密码和会话；远程使用必须设置强密码，长期使用应接入 HTTPS 并按需限制访问来源。默认网络策略阻止本机、内网、链路本地及云元数据地址；个人内部目标仅能按明确主机白名单放行，云元数据目标始终阻止。
 
 | 环境变量 | 默认值 / 用途 |
 |---|---|
@@ -196,7 +211,10 @@ HTTP 契约：
 | `SIGNDESK_PORT` | `10500`，HTTP 端口 |
 | `SIGNDESK_DATA_DIR` | 默认 `~/.signdesk/data`，外部 SQLite 数据目录；设置后覆盖默认路径 |
 | `SIGNDESK_AUTH_USERNAME` | `admin`，覆盖配置文件中的管理员用户名 |
-| `SIGNDESK_AUTH_PASSWORD` | `123456`，覆盖管理员密码，远程使用前必须修改 |
+| `SIGNDESK_AUTH_PASSWORD` | JAR 默认 `123456`，远程使用前必须修改；Docker Compose 要求显式填写，空值拒绝启动 |
+| `SIGNDESK_PUBLISH_ADDRESS` | 仅 Compose：默认 `0.0.0.0` 公网发布，设 `127.0.0.1` 可仅发布到服务器本机 |
+| `SIGNDESK_HOST_DATA` | 仅 Compose：两种打包方式共用的宿主机绑定目录，模板设为 `/root/signdesk/data` |
+| `SIGNDESK_IMAGE` | 仅 Compose：默认 `signdesk:0.1.0`，Jib 导入和 Dockerfile 构建共用此标签 |
 | `SERVER_SERVLET_SESSION_COOKIE_SECURE` | HTTPS 部署设为 `true`；本机 HTTP / SSH 隧道保持默认 |
 | `SIGNDESK_ALLOWED_HOSTS` | 可选，逗号分隔的明确主机白名单，例如 `internal.example.com,192.168.1.20` |
 

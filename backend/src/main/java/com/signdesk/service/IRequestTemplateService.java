@@ -15,4 +15,8 @@ public interface IRequestTemplateService {
     void update(String platformId, String id, RequestTemplateBo input);
 
     void delete(String platformId, String id);
+
+    TemplateApplyPreviewVo previewApplication(String platformId, String id, String mode);
+
+    TemplateAppliedVo apply(String platformId, String id, TemplateApplyBo input);
 }

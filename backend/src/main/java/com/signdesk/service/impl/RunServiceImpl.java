@@ -3,6 +3,7 @@ package com.signdesk.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.signdesk.common.*;
 import com.signdesk.converter.ScheduleConverter;
+import com.signdesk.domain.model.RequestRuleConfig;
 import com.signdesk.domain.*;
 import com.signdesk.domain.bo.ManualRunBo;
 import com.signdesk.domain.model.SchedulePlan;
@@ -188,7 +189,7 @@ public class RunServiceImpl implements IRunService {
             i.setBatchId(b.getId());
             i.setRequestId(r.getId());
             i.setRequestRevision(r.getCurrentRevision());
-            i.setRulesJson(r.getRulesJson());
+            i.setRulesJson(Json.write(RequestRuleConfig.read(r.getRulesJson()).rules()));
             i.setOrdinal(order++);
             i.setStatus("queued");
             i.setSafeSummary("");

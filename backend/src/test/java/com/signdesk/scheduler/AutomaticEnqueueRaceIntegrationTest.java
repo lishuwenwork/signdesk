@@ -15,6 +15,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.*;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
+import org.springframework.scheduling.support.ScheduledMethodRunnable;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
@@ -96,6 +98,7 @@ class AutomaticEnqueueRaceIntegrationTest {
     @Autowired ScheduleScanner scanner;
     @Autowired JdbcTemplate jdbc;
     @Autowired MutableClock clock;
+    @Autowired ScheduledAnnotationBeanPostProcessor scheduled;
 
     HttpServer fixture;
     String url, platform, account, request;
@@ -104,6 +107,12 @@ class AutomaticEnqueueRaceIntegrationTest {
 
     @BeforeAll
     void fixture() throws Exception {
+        // A long fixedDelay does not suppress the first scheduled invocation. Only controlled
+        // scans participate in these races; real dispatch and every production guard stay enabled.
+        scheduled.getScheduledTasks().stream()
+                .filter(task -> task.getTask().getRunnable() instanceof ScheduledMethodRunnable runnable
+                        && runnable.getTarget() == scanner && runnable.getMethod().getName().equals("scan"))
+                .forEach(task -> task.cancel(false));
         fixture = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         fixture.createContext("/before", e -> reply(e, beforeHits));
         fixture.createContext("/imported", e -> reply(e, importedHits));
@@ -258,6 +267,7 @@ class AutomaticEnqueueRaceIntegrationTest {
             assertTrue(
                     readPlan.await(5, TimeUnit.SECONDS),
                     "scanner did not reach automatic after reading the due plan");
+            assertEquals(0, batchCount(), "unexpected enqueue before the controlled scan resumes");
         }
 
         void resume() throws Exception {

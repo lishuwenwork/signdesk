@@ -219,7 +219,7 @@ test('record pagination and filters reflect server totals while searching only c
   await page.goto(`/#/runs?platformId=${data.platform.id}&status=success`)
   await expect(page.locator('.pagination-copy')).toContainText('共 12 条记录')
   await page.locator('.el-pagination__sizes .el-select__wrapper').click()
-  await page.getByRole('option',{name:/^10/}).click()
+  await page.getByRole('option',{name:'10条/页',exact:true}).click()
   await expect(page.locator('.log-table tbody tr')).toHaveCount(10)
   await page.locator('.btn-next').click()
   await expect(page.locator('.log-table tbody tr')).toHaveCount(2)

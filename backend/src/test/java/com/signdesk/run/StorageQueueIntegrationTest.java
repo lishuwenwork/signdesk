@@ -267,6 +267,14 @@ class StorageQueueIntegrationTest {
                     e.getResponseBody().write(reply);
                     e.close();
                 });
+        server.createContext("/already-done", e -> {
+            hits.incrementAndGet();
+            byte[] reply = "{\"message\":\"今日已签到\",\"success\":false}".getBytes(StandardCharsets.UTF_8);
+            e.getResponseHeaders().add("Content-Type", "application/json; charset=UTF-8");
+            e.sendResponseHeaders(200, reply.length);
+            e.getResponseBody().write(reply);
+            e.close();
+        });
         server.start();
         url = "http://127.0.0.1:" + server.getAddress().getPort();
     }
@@ -819,6 +827,239 @@ class StorageQueueIntegrationTest {
     }
 
     @Test
+    void specialCompletionAndInverseFailurePersistDifferentDayStates() throws Exception {
+        setup("/already-done");
+        var boolRules = new ResultRules(new ResultRules.Match("success", true, null),
+                new ResultRules.Match("message", "今日已签到", null), null,
+                new ResultRules.Match("success", false, null), true);
+        requests.update(request, new RequestBo("每日签到", true, boolRules, 1));
+        String done = manual(false);
+        complete(done);
+        assertEquals("already_done", status(done));
+        assertEquals("completed", listedRequest(request).getTodayState());
+        assertEquals(1, count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", request));
+        String skipped = manual(false);
+        complete(skipped);
+        assertEquals("skipped", status(skipped));
+        assertEquals(1, hits.get());
+        var inverse = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        String failedRequest = addRequest(account, "普通失败", "curl '" + url + "/unmatched'", inverse, true);
+        String failed = runs.manual(new ManualRunBo("request", failedRequest, false, "inverse-failed")).getFirst();
+        complete(failed);
+        assertEquals("failed", status(failed));
+        assertEquals("none", listedRequest(failedRequest).getTodayState());
+        assertEquals(0, listedRequest(failedRequest).getAuthPaused());
+        assertEquals(0, count("SELECT COUNT(*) FROM daily_completions WHERE request_id=?", failedRequest));
+        assertEquals(0, count("SELECT COUNT(*) FROM request_day_states WHERE request_id=? AND unknown_pending=1", failedRequest));
+        String unknownRequest = addRequest(account, "未开启反向", "curl '" + url + "/unmatched'", ResultRules.defaults(), true);
+        String unknown = runs.manual(new ManualRunBo("request", unknownRequest, false, "inverse-unknown")).getFirst();
+        complete(unknown);
+        assertEquals("unknown", status(unknown));
+        assertEquals("pending", listedRequest(unknownRequest).getTodayState());
+        assertEquals(3, hits.get());
+    }
+
+    @Test
+    void inverseOptionIsFrozenInQueuedItemsAndCopiedIndependentlyFromTemplates() throws Exception {
+        setup("/hold");
+        var inverse = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        String template = addTemplate(platform, "反向模板", inverse);
+        String second = addRequest(account, "冻结反向选项", "curl '" + url + "/unmatched'",
+                templates.queryList(platform).getFirst().getRules(), true);
+        String batch = runs.manual(new ManualRunBo("platform", platform, false, "inverse-snapshot")).getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            templates.update(platform, template, new RequestTemplateBo("关闭反向", ResultRules.defaults(), 1));
+            assertTrue(listedRequest(second).getRules().failureOnSuccessMismatch());
+            requests.update(second, new RequestBo("关闭反向", true, ResultRules.defaults(), 1));
+            var frozen = Json.read(text("SELECT rules_json FROM run_items WHERE request_id=? AND batch_id=?", second, batch), ResultRules.class);
+            assertTrue(frozen.failureOnSuccessMismatch());
+        } finally { release.countDown(); }
+        complete(batch);
+        assertEquals(List.of("success", "failed"), records.queryBatch(batch).getItems().stream().map(BatchItemVo::getStatus).toList());
+        String next = runs.manual(new ManualRunBo("request", second, false, "inverse-next-batch")).getFirst();
+        complete(next);
+        assertEquals("unknown", status(next));
+        assertEquals(3, hits.get());
+    }
+
+    @Test
+    void inverseOptionSurvivesBothBackupModesWithoutSendingRequests() {
+        setup("/ok");
+        var inverse = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        requests.update(request, new RequestBo("反向请求", true, inverse, 1));
+        addTemplate(platform, "反向模板", inverse);
+        for (boolean include : new boolean[] {true, false}) {
+            var exported = config(include);
+            assertTrue(exported.payload().requests().getFirst().rules().failureOnSuccessMismatch());
+            assertTrue(exported.payload().templates().getFirst().rules().failureOnSuccessMismatch());
+            restore(exported);
+            assertTrue(listedRequest(request).getRules().failureOnSuccessMismatch());
+            assertTrue(templates.queryList(platform).getFirst().getRules().failureOnSuccessMismatch());
+            assertTrue(settings.query().paused());
+            assertEquals(0, hits.get());
+        }
+        var legacy = Json.map(Json.write(config(false)));
+        var payload = (Map<String, Object>) legacy.get("payload");
+        for (String group : List.of("requests", "templates")) {
+            var entry = ((List<Map<String, Object>>) payload.get(group)).getFirst();
+            ((Map<String, Object>) entry.get("rules")).remove("failureOnSuccessMismatch");
+        }
+        restore(Json.read(Json.write(legacy), BackupFile.class));
+        assertFalse(listedRequest(request).getRules().failureOnSuccessMismatch());
+        assertFalse(templates.queryList(platform).getFirst().getRules().failureOnSuccessMismatch());
+        assertEquals(0, hits.get());
+    }
+
+    TemplateApplyBo applicationInput(TemplateApplyPreviewVo preview) {
+        return new TemplateApplyBo(preview.mode(), preview.templateVersion(), preview.requests().stream()
+                .map(r -> new TemplateApplyBo.Target(r.id(), r.version())).toList());
+    }
+
+    @Test
+    void selectedTemplateApplicationLinksOnlyChosenRequestsAndLaterUpdatesAllLinkedRules() throws Exception {
+        setup("/ok");
+        String completed = manual(false);
+        complete(completed);
+        String second = addRequest(account, "保留独立名称", "curl '" + url + "/unmatched'", ResultRules.defaults(), false);
+        String untouched = addRequest(account, "不选择的请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        jdbc.update("UPDATE requests SET auth_paused=1 WHERE id=?", second);
+        var rules = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        String template = addTemplate(platform, "批量模板", rules);
+        var preview = templates.previewApplication(platform, template, "selected");
+        assertEquals(3, preview.requests().size());
+        var chosen = preview.requests().stream().filter(r -> !r.id().equals(untouched))
+                .map(r -> new TemplateApplyBo.Target(r.id(), r.version())).toList();
+        var applied = templates.apply(platform, template, new TemplateApplyBo("selected", 1, chosen));
+        assertEquals(2, applied.applied());
+        assertEquals(2, applied.newlyLinked());
+        assertEquals(template, listedRequest(request).getTemplateId());
+        assertEquals(template, listedRequest(second).getTemplateId());
+        assertNull(listedRequest(untouched).getTemplateId());
+        assertEquals("保留独立名称", listedRequest(second).getName());
+        assertEquals(0, listedRequest(second).getEnabled());
+        assertEquals(1, listedRequest(second).getAuthPaused());
+        assertEquals("completed", listedRequest(request).getTodayState());
+        assertEquals(1, listedRequest(request).getCurrentRevision());
+        assertTrue(requests.queryRevision(second, null).rawCurl().contains("/unmatched"));
+        assertEquals(2, templates.queryList(platform).getFirst().getLinkedRequestCount());
+        var changed = new ResultRules(new ResultRules.Match("code", 99, null), null, null, null, true);
+        templates.update(platform, template, new RequestTemplateBo("修改后的模板", changed, 1));
+        assertEquals(rules, listedRequest(request).getRules(), "editing a template must not auto-sync");
+        var linked = templates.previewApplication(platform, template, "linked");
+        assertEquals(2, linked.requests().size());
+        assertEquals(2, templates.apply(platform, template, applicationInput(linked)).applied());
+        assertEquals(changed, listedRequest(request).getRules());
+        assertEquals(changed, listedRequest(second).getRules());
+        assertEquals(ResultRules.defaults(), listedRequest(untouched).getRules());
+        assertEquals(1, hits.get(), "applying templates must not send HTTP");
+    }
+
+    @Test
+    void templateApplicationRejectsStaleVersionsDuplicatesForeignTargetsAndChangedLinkedScope() {
+        setup("/ok");
+        String second = addRequest(account, "第二请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        String otherPlatform = addPlatform("隔离平台", "", true);
+        String foreign = addRequest(addAccount(otherPlatform, "隔离账号", true), "隔离请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        String template = addTemplate(platform, "版本模板", ResultRules.defaults());
+        var preview = templates.previewApplication(platform, template, "selected");
+        var initial = applicationInput(preview);
+        templates.update(platform, template, new RequestTemplateBo("新模板", ResultRules.defaults(), 1));
+        assertEquals(409, assertThrows(ApiException.class, () -> templates.apply(platform, template, initial)).status());
+        var fresh = templates.previewApplication(platform, template, "selected");
+        requests.update(second, new RequestBo("手动更新", true, ResultRules.defaults(), 1));
+        assertEquals(409, assertThrows(ApiException.class, () -> templates.apply(platform, template, applicationInput(fresh))).status());
+        assertEquals(1, listedRequest(request).getVersion());
+        assertNull(listedRequest(request).getTemplateId());
+        assertThrows(ApiException.class, () -> templates.apply(platform, template, new TemplateApplyBo("selected", 2,
+                List.of(new TemplateApplyBo.Target(request, 1), new TemplateApplyBo.Target(request, 1)))));
+        assertThrows(ApiException.class, () -> templates.apply(platform, template, new TemplateApplyBo("selected", 2,
+                List.of(new TemplateApplyBo.Target(request, 1), new TemplateApplyBo.Target(foreign, 1)))));
+        assertEquals(1, listedRequest(request).getVersion());
+        var chosen = new TemplateApplyBo("selected", 2, List.of(new TemplateApplyBo.Target(request, 1)));
+        templates.apply(platform, template, chosen);
+        var linked = templates.previewApplication(platform, template, "linked");
+        addRequest(account, "新增关联", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        templates.apply(platform, template, new TemplateApplyBo("selected", 2, List.of(new TemplateApplyBo.Target(second, 2))));
+        assertEquals(409, assertThrows(ApiException.class, () -> templates.apply(platform, template, applicationInput(linked))).status());
+        assertEquals(2, listedRequest(request).getVersion());
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void newRequestTemplateLinksCanBePreservedReassignedDetachedAndDeletedWithoutLosingRules() {
+        setup("/ok");
+        String template = addTemplate(platform, "关联模板", ResultRules.defaults());
+        String linked = requests.insert(account, new NewRequestBo("独立名称", "curl '" + url + "/ok'", true, ResultRules.defaults(), template));
+        assertEquals(template, listedRequest(linked).getTemplateId());
+        requests.update(linked, new RequestBo("手动规则", true, ResultRules.defaults(), 1));
+        assertEquals(template, listedRequest(linked).getTemplateId());
+        requests.update(linked, new RequestBo("解除关联", true, ResultRules.defaults(), 2, true));
+        assertNull(listedRequest(linked).getTemplateId());
+        String other = addTemplate(platform, "另一个模板", ResultRules.defaults());
+        templates.apply(platform, template, new TemplateApplyBo("selected", 1, List.of(new TemplateApplyBo.Target(request, 1))));
+        assertEquals(1, templates.apply(platform, other, new TemplateApplyBo("selected", 1,
+                List.of(new TemplateApplyBo.Target(request, 2)))).newlyLinked());
+        assertEquals(0, templates.queryList(platform).stream().filter(t -> t.getId().equals(template)).findFirst().orElseThrow().getLinkedRequestCount());
+        templates.delete(platform, other);
+        assertNull(listedRequest(request).getTemplateId());
+        assertEquals(ResultRules.defaults(), listedRequest(request).getRules());
+        assertEquals(4, listedRequest(request).getVersion());
+        String foreignPlatform = addPlatform("模板归属隔离", "", true);
+        String foreignAccount = addAccount(foreignPlatform, "隔离账号", true);
+        assertThrows(ApiException.class, () -> requests.insert(foreignAccount,
+                new NewRequestBo("错误关联", "curl '" + url + "/ok'", true, ResultRules.defaults(), template)));
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void templateApplicationCannotChangeQueuedExecutionRules() throws Exception {
+        setup("/hold");
+        String second = addRequest(account, "队列中的请求", "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        var changed = new ResultRules(new ResultRules.Match("code", 99, null), null, null, null, true);
+        String template = addTemplate(platform, "队列模板", changed);
+        String batch = runs.manual(new ManualRunBo("platform", platform, false, "linked-queue-fixture")).getFirst();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        try {
+            templates.apply(platform, template, new TemplateApplyBo("selected", 1, List.of(new TemplateApplyBo.Target(second, 1))));
+            assertEquals(template, listedRequest(second).getTemplateId());
+            String frozen = text("SELECT rules_json FROM run_items WHERE batch_id=? AND request_id=?", batch, second);
+            assertEquals(ResultRules.defaults(), Json.read(frozen, ResultRules.class));
+            assertFalse(frozen.contains("templateId"));
+        } finally { release.countDown(); }
+        complete(batch);
+        assertEquals(List.of("success", "success"), records.queryBatch(batch).getItems().stream().map(BatchItemVo::getStatus).toList());
+        String next = runs.manual(new ManualRunBo("request", second, true, "linked-new-rules-fixture")).getFirst();
+        complete(next);
+        assertEquals("failed", status(next));
+        assertEquals(3, hits.get());
+    }
+
+    @Test
+    void templateLinksSurviveFullAndConfigBackupsAndInvalidReferencesLeaveDataIntact() {
+        setup("/ok");
+        String template = addTemplate(platform, "备份关联", ResultRules.defaults());
+        templates.apply(platform, template, new TemplateApplyBo("selected", 1, List.of(new TemplateApplyBo.Target(request, 1))));
+        for (boolean include : new boolean[] {true, false}) {
+            var exported = config(include);
+            assertEquals(template, exported.payload().requests().getFirst().templateId());
+            restore(exported);
+            assertEquals(template, listedRequest(request).getTemplateId());
+            assertEquals(1, templates.queryList(platform).getFirst().getLinkedRequestCount());
+            assertEquals(0, hits.get());
+        }
+        var damaged = Json.map(Json.write(config(false)));
+        var entry = ((List<Map<String, Object>>) ((Map<String, Object>) damaged.get("payload")).get("requests")).getFirst();
+        entry.put("templateId", "9999");
+        var invalid = Json.read(Json.write(damaged), BackupFile.class);
+        assertThrows(ApiException.class, () -> backups.preview(new BackupPreviewBo(invalid)));
+        assertThrows(ApiException.class, () -> restore(invalid));
+        assertEquals(template, listedRequest(request).getTemplateId());
+        assertEquals(1, count("SELECT COUNT(*) FROM platforms"));
+        assertEquals(0, hits.get());
+    }
+
+    @Test
     void templatesArePlatformScopedValidatedVersionedAndCascadeWithTheirPlatform() {
         platform = addPlatform("模板平台", "", true);
         String other = addPlatform("另一个平台", "", true);
@@ -1284,7 +1525,8 @@ class StorageQueueIntegrationTest {
                         Map.of("id", "0"),
                         Map.of("id", "abcdef0123456789abcdef0123456789"),
                         Map.of("name", " "),
-                        Map.of("rules", invalidRules))) {
+                        Map.of("rules", invalidRules),
+                        Map.of("rules", new ResultRules(new ResultRules.Match("code", null, null), null, null, null, true)))) {
             var damaged = Json.map(Json.write(exported));
             var payload = (Map<String, Object>) damaged.get("payload");
             var list = (List<Map<String, Object>>) payload.get("templates");

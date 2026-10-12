@@ -7,10 +7,22 @@ import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 
-public record ResultRules(Match success, Match alreadyDone, Match expired, Match failed) {
+public record ResultRules(
+        Match success, Match alreadyDone, Match expired, Match failed,
+        Boolean failureOnSuccessMismatch) {
+    public ResultRules {
+        if (failureOnSuccessMismatch == null) failureOnSuccessMismatch = false;
+    }
+
+    public ResultRules(Match success, Match alreadyDone, Match expired, Match failed) {
+        this(success, alreadyDone, expired, failed, false);
+    }
+
     public record Match(String path, Object value, String contains) {
         @Override public String toString() { return "Match[redacted]"; }
     }
+
+    private enum FieldMatch { EQUAL, DIFFERENT, UNAVAILABLE }
 
     @Override public String toString() { return "ResultRules[redacted]"; }
 
@@ -37,7 +49,18 @@ public record ResultRules(Match success, Match alreadyDone, Match expired, Match
             if (m.contains() != null && m.contains().length() > 200)
                 throw new ApiException("文本规则过长");
         }
+        if (rules.failureOnSuccessMismatch && !supportsFailureOnMismatch(rules.success))
+            throw new ApiException("反向失败判断需要纯 JSON 字段成功规则，等于值为数字、字符串或布尔，不能附加文本包含");
         return rules;
+    }
+
+    private static boolean supportsFailureOnMismatch(Match rule) {
+        return rule != null
+                && rule.path() != null && !rule.path().isBlank()
+                && (rule.contains() == null || rule.contains().isBlank())
+                && (rule.value() instanceof Number
+                        || rule.value() instanceof String
+                        || rule.value() instanceof Boolean);
     }
 
     public String classify(int httpStatus, String body) {
@@ -53,9 +76,12 @@ public record ResultRules(Match success, Match alreadyDone, Match expired, Match
             return httpStatus >= 400 && httpStatus < 500 ? "failed" : "unknown";
         }
         if (matches(expired, root, body)) return "expired";
-        if (matches(failed, root, body)) return "failed";
+        // An explicit completion takes precedence over a generic operation failure.
         if (matches(alreadyDone, root, body)) return "already_done";
+        if (matches(failed, root, body)) return "failed";
         if (matches(success, root, body)) return "success";
+        if (failureOnSuccessMismatch && supportsFailureOnMismatch(success)
+                && compareField(success, root) == FieldMatch.DIFFERENT) return "failed";
         return "unknown";
     }
 
@@ -63,10 +89,14 @@ public record ResultRules(Match success, Match alreadyDone, Match expired, Match
         if (rule == null) return false;
         if (rule.contains() != null
                 && !rule.contains().isBlank()
-                && !body.contains(rule.contains())) return false;
+                && (body == null || !body.contains(rule.contains()))) return false;
         if (rule.path() == null || rule.path().isBlank())
             return rule.contains() != null && !rule.contains().isBlank();
-        if (root == null) return false;
+        return compareField(rule, root) == FieldMatch.EQUAL;
+    }
+
+    private FieldMatch compareField(Match rule, JsonNode root) {
+        if (root == null) return FieldMatch.UNAVAILABLE;
         String pointer = rule.path().replaceFirst("^\\$\\.", "").replaceAll("\\[(\\d+)\\]", ".$1");
         JsonNode node = root;
         for (String part : pointer.split("\\.")) {
@@ -74,19 +104,24 @@ public record ResultRules(Match success, Match alreadyDone, Match expired, Match
                 try {
                     node = node.path(Integer.parseInt(part));
                 } catch (NumberFormatException e) {
-                    return false;
+                    return FieldMatch.UNAVAILABLE;
                 }
             } else node = node.path(part);
         }
-        if (node.isMissingNode()) return false;
+        if (node.isMissingNode()) return FieldMatch.UNAVAILABLE;
         Object expected = rule.value();
-        if (expected == null) return node.isNull();
-        if (expected instanceof Number)
-            return node.isNumber()
-                    && new BigDecimal(node.asText()).compareTo(new BigDecimal(expected.toString()))
-                            == 0;
-        if (expected instanceof Boolean)
-            return node.isBoolean() && node.asBoolean() == (boolean) expected;
-        return node.isString() && node.asText().equals(expected.toString());
+        if (expected == null) return node.isNull() ? FieldMatch.EQUAL : FieldMatch.UNAVAILABLE;
+        boolean equal;
+        if (expected instanceof Number) {
+            if (!node.isNumber()) return FieldMatch.UNAVAILABLE;
+            equal = new BigDecimal(node.asText()).compareTo(new BigDecimal(expected.toString())) == 0;
+        } else if (expected instanceof Boolean) {
+            if (!node.isBoolean()) return FieldMatch.UNAVAILABLE;
+            equal = node.asBoolean() == (boolean) expected;
+        } else {
+            if (!node.isString()) return FieldMatch.UNAVAILABLE;
+            equal = node.asText().equals(expected.toString());
+        }
+        return equal ? FieldMatch.EQUAL : FieldMatch.DIFFERENT;
     }
 }

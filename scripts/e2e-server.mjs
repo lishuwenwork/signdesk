@@ -18,6 +18,13 @@ const fixture = createServer(async (request, response) => {
   for await (const chunk of request) body += chunk.toString()
   received.push({ url: request.url, method: request.method, cookie: request.headers.cookie, device: request.headers['x-device'], body })
   const route = new URL(request.url, 'http://127.0.0.1').pathname
+  if (route === '/rules/nonzero' || route === '/rules/already-done' || route === '/rules/missing') {
+    response.setHeader('Content-Type', 'application/json; charset=UTF-8')
+    response.end(JSON.stringify(route === '/rules/nonzero' ? { code: 1234, message: '条件不满足' }
+      : route === '/rules/already-done' ? { message: '今日已签到', success: false }
+      : { message: '未提供业务字段' }))
+    return
+  }
   if (route === '/responses/json') {
     response.setHeader('Content-Type', 'application/json; charset=UTF-8')
     response.end(JSON.stringify({ code: 0, message: '响应体 response-fixture-secret', html: '<img src=x onerror="window.__responseExecuted=true">' }, null, 2))

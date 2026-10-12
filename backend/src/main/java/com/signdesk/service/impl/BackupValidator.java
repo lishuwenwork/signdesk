@@ -64,6 +64,7 @@ final class BackupValidator {
                 requests = new HashSet<>(),
                 templates = new HashSet<>(),
                 schedules = new HashSet<>();
+        Map<String, String> accountPlatforms = new HashMap<>(), templatePlatforms = new HashMap<>();
         for (var p : s.platforms()) {
             id(p.id());
             Checks.name(p.name(), 40);
@@ -77,6 +78,7 @@ final class BackupValidator {
             Checks.name(a.alias(), 40);
             if (!platforms.contains(a.platformId()) || !accounts.add(a.id()))
                 throw new IllegalArgumentException();
+            accountPlatforms.put(a.id(), a.platformId());
         }
         var prepared = new ArrayList<ValidatedBackup.PreparedRequest>();
         for (var r : s.requests()) {
@@ -105,6 +107,13 @@ final class BackupValidator {
             Objects.requireNonNull(t.rules());
             ResultRules.validate(t.rules());
             if (!platforms.contains(t.platformId()) || !templates.add(t.id()))
+                throw new IllegalArgumentException();
+            templatePlatforms.put(t.id(), t.platformId());
+        }
+        for (var r : s.requests()) {
+            if (r.templateId() == null) continue;
+            id(r.templateId());
+            if (!Objects.equals(accountPlatforms.get(r.accountId()), templatePlatforms.get(r.templateId())))
                 throw new IllegalArgumentException();
         }
         for (var plan : s.schedules()) {

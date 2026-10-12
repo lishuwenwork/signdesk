@@ -8,7 +8,6 @@ secrets/
 .env
 .env.*
 !.env.example
-!.env.image.example
 *.db
 *.db-*
 *.key

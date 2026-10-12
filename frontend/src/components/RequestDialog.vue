@@ -22,13 +22,14 @@ const preview = ref(null),
   rules = ref(createRuleDraft()),
   templates = ref([]),
   selectedTemplate = ref(''),
+  unlinkTemplate = ref(false),
   templatesLoading = ref(false),
   templatesError = ref(''),
   saveError = ref('')
 let baseline = '', session = 0
 onUnmounted(() => { session++; form.curl = ''; preview.value = null; rules.value = createRuleDraft(); templates.value = [] })
 function signature() {
-  return JSON.stringify({ name: form.name, rules: rules.value })
+  return JSON.stringify({ name: form.name, rules: rules.value, unlinkTemplate: unlinkTemplate.value })
 }
 watch(
   () => [props.modelValue, props.platformId, props.accountId, props.mode, props.request?.id],
@@ -38,6 +39,7 @@ watch(
     preview.value = null
     busy.value = false
     selectedTemplate.value = ''
+    unlinkTemplate.value = false
     templates.value = []
     templatesLoading.value = false
     templatesError.value = ''
@@ -133,6 +135,7 @@ async function save() {
         enabled: form.enabled,
         rules: collectRules(rules.value),
         version: props.request.version,
+        unlinkTemplate: unlinkTemplate.value,
       })
     else {
       const result = await api(`/accounts/${props.accountId}/requests`, 'POST', {
@@ -140,6 +143,7 @@ async function save() {
         curl: form.curl,
         enabled: form.enabled,
         rules: collectRules(rules.value),
+        templateId: selectedTemplate.value || null,
       })
       requestId = result.id
     }
@@ -224,6 +228,8 @@ const bodyText = computed(() => {
         <el-form label-position="top" :disabled="busy">
           <el-form-item label="请求名称"><el-input v-model="form.name" maxlength="60" /></el-form-item>
         </el-form>
+        <p v-if="mode === 'rules' && request?.templateId" class="muted small space-top">此请求已关联接口模板。手动修改规则不会自动解除关联，下次应用模板将覆盖这些修改。</p>
+        <el-checkbox v-if="mode === 'rules' && request?.templateId" v-model="unlinkTemplate" :disabled="busy" class="space-top">解除模板关联（保留当前规则）</el-checkbox>
         <ResultRulesEditor v-model="rules" :disabled="busy" />
         <div class="dialog-footer">
           <el-button v-if="mode === 'new'" @click="step = 1">上一步</el-button>

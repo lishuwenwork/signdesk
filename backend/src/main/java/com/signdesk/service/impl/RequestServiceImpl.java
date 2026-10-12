@@ -1,6 +1,8 @@
 package com.signdesk.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.signdesk.common.*;
+import com.signdesk.domain.model.RequestRuleConfig;
 import com.signdesk.domain.*;
 import com.signdesk.domain.bo.*;
 import com.signdesk.domain.vo.*;
@@ -20,6 +22,7 @@ import java.time.Clock;
 public class RequestServiceImpl implements IRequestService {
     private final RequestDefinitionMapper requests;
     private final AccountMapper accounts;
+    private final RequestTemplateMapper templates;
     private final RequestRevisionMapper revisions;
     private final CurlParser parser;
     private final CatalogGuard guard;
@@ -28,14 +31,18 @@ public class RequestServiceImpl implements IRequestService {
     @Override
     @Transactional
     public String insert(String accountId, NewRequestBo b) {
-        Checks.found(accounts.selectById(accountId));
+        var account = Checks.found(accounts.selectById(accountId));
+        if (b.templateId() != null)
+            Checks.found(templates.selectOne(new LambdaQueryWrapper<RequestTemplate>()
+                    .eq(RequestTemplate::getId, b.templateId())
+                    .eq(RequestTemplate::getPlatformId, account.getPlatformId())));
         var parsed = parser.parse(b.curl());
         var r = new RequestDefinition();
         r.setAccountId(accountId);
         r.setName(Checks.name(b.name(), 60));
         r.setEnabled(b.enabled() ? 1 : 0);
         r.setCurrentRevision(1);
-        r.setRulesJson(Json.write(ResultRules.validate(b.rules())));
+        r.setRulesJson(new RequestRuleConfig(ResultRules.validate(b.rules()), b.templateId()).toJson());
         r.setAuthPaused(0);
         r.setSortOrder(0);
         r.setVersion(1);
@@ -49,11 +56,14 @@ public class RequestServiceImpl implements IRequestService {
     @Override
     @Transactional
     public void update(String id, RequestBo b) {
+        var old = Checks.found(requests.selectById(id));
+        var config = RequestRuleConfig.read(old.getRulesJson());
         var r = new RequestDefinition();
         r.setId(id);
         r.setName(Checks.name(b.name(), 60));
         r.setEnabled(b.enabled() ? 1 : 0);
-        r.setRulesJson(Json.write(ResultRules.validate(b.rules())));
+        r.setRulesJson(new RequestRuleConfig(ResultRules.validate(b.rules()),
+                Boolean.TRUE.equals(b.unlinkTemplate()) ? null : config.templateId()).toJson());
         r.setVersion(b.version());
         Checks.changed(requests.updateById(r));
     }

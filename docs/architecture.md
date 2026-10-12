@@ -1,8 +1,8 @@
 # SignDesk 后端重构架构
 
-> 状态：**P1～P5 已实现；P6 自动化发布验证通过，浏览器 E2E 待运行；P7 文档收尾已完成**。日期：2026-10-09。
-> 代码集成在 `refactor/backend-ruoyi-style` 主工作区，`475c46a` 是实现前基线；当前实现尚未提交/推送。后端最终 110/110、前端单元 8/8、独立全量发布通过；浏览器 E2E 实际运行 0 项。详见 [重构计划](refactoring-plan.md) 与 [验证记录](validation.md)。
-> 本文说明已落地结构、数据约束和仍需保留的设计不变量；用户验收要求见 [需求文档](requirements.md)。第 1～12 节保留 2026-10-09 的重构记录；2026-10-10 正式全站前端落地与只读摘要扩展见第 13 节，2026-10-11 单管理员 Session 登录见第 14 节，最新验证以 validation.md 的当日章节为准。
+> 状态：**已集成；本地自动化、单 JAR 发布与真实浏览器 E2E 验证通过**。日期：2026-10-11。
+> 代码位于 `refactor/backend-ruoyi-style` 主工作区，本轮规则/模板增量基线 `029424a`，当前增量未提交/推送。最新隔离发布后端 149/149、前端单元 46/46，单弹框修复包真实浏览器全量 68/68；后续间距/关闭增量专项、失败过程、产物及未验证范围见 [验证记录](validation.md) 当日末节，不以 68/68 代替新包全量验证。`475c46a`、110/110 与 8/8 属于历史重构记录，见 [重构计划](refactoring-plan.md)。
+> 本文说明已落地结构、数据约束和仍需保留的设计不变量；用户验收要求见 [需求文档](requirements.md)。第 1～12 节保留 2026-10-09 的重构记录；2026-10-10 正式全站前端落地与只读摘要扩展见第 13 节，2026-10-11 单管理员 Session 登录见第 14 节，结果规则与模板批量关联应用见第 15 节，最新验证以 validation.md 的当日章节为准。
 
 ## 1. 设计目标
 
@@ -248,7 +248,7 @@ backend/src/main/resources/
 
 上述架构决定已在当前主工作区实现；验收边界和未完成项见第 12 节及 [验证记录](validation.md)。
 
-## 12. 实现与验证状态
+## 12. 实现与验证状态（2026-10-09 历史）
 
 截至 2026-10-09，已完成 Controller/Service/Mapper 分层、持久队列与调度拆分、明文新 V1、明文配置导入导出，以及前端与部署适配。后端最终 **110/110**（0 失败、0 错误、0 跳过），前端单元 **8/8**；独立工作树 fresh `npm ci`、Vite build、Maven clean verify 和 `node scripts/build.mjs` 全发布均通过。完整类计数、警告和独立 artifact 信息见 [验证记录](validation.md)。
 
@@ -291,3 +291,24 @@ backend/src/main/resources/
 - 前端顶层 RouterView 将独立 Login 与受保护 AppShell 分开，登录页不挂载业务轮询。状态只在内存，401 立即清除身份、卸载管理布局与敏感抽屉、关闭全局确认；请求带会话 generation，注销之前的迟到响应不能污染下一次登录。路由返回目标仅接受原五个内部业务路径。设置页和桌面侧栏提供退出，后台队列和调度不依赖浏览器会话。
 - 初始密码远程部署前应修改；外部 Spring YAML 或 `SIGNDESK_AUTH_USERNAME/PASSWORD` 可覆盖配置。HTTPS 启用 Secure Cookie，可信代理正确处理 Host/协议/端口，不开放跨域或放宽 Origin 校验。SQLite 和备份仍是明文，文件权限与网络访问纪律不变。
 - 本轮验证与首次失败记录见 [验证记录](validation.md) 的 2026-10-11 章节，不用历史数据替代当前浏览器验收。
+
+## 15. 2026-10-11 结果规则与模板显式批量应用
+
+### 规则分类
+
+`ResultRules` 增加可选 `failureOnSuccessMismatch`，缺省/null 规范为 false，四参数构造器和旧 JSON 继续可用。纯 JSON 成功字段以三态比较区分相等、同类型不等和不可判断；仅明确开启时将同类型不等归为 failed。数字沿用 BigDecimal 数值比较，不将字符串/布尔/null 互相转换；null、文本或附加文本成功规则禁止开启反向模式。完整 2xx 顺序为 expired → already_done → 显式 failed → success → 反向 failed → unknown；非 2xx 与 HTTP 读取不完整的提前 unknown 边界不变。规则试算和执行仍共享 `classify()`，不引入脚本或额外执行状态。
+
+### 请求关联与数据兼容
+
+- `domain/model/RequestRuleConfig(rules, templateId)` 只承载请求配置元数据，复用既有 `requests.rules_json`。无关联仍保存原规则 JSON；有关联保存 `{rules:{...},templateId:"..."}`；统一解码兼容两种形状。不改 `db/V1.sql`、schema version 或只读兼容检查，不迁移/删除旧数据库。
+- `CatalogConverter` 将规则与关联拆成 `RequestVo.rules/templateId`；平台树仍是原四次批量查询。模板列表批量读取同平台账号/请求计算 `linkedRequestCount`，不逐请求查库。
+- 创建执行项只冻结 `config.rules()`，不把模板来源写进执行规则或动态查询模板。已有 queued 项不被配置应用修改；旧 queued 规则 JSON 继续按原字段读取。
+- 请求新增可传所属平台的 `templateId`；手动编辑默认保留关联，`unlinkTemplate=true` 明确解除且保留规则。删除模板事务内解除请求关联并增加其配置版本，保留实际规则、凭证、日标记及队列快照。
+- 两种备份的 `RequestEntry` 增加可选 `templateId`；旧文件缺省无关联。预览校验模板存在、与请求账号同平台；恢复沿用维护互斥、整体事务、失败回滚和恢复后暂停，不发送请求。
+
+### 预览与批量应用契约
+
+- `GET /api/platforms/{platformId}/templates/{id}/requests?mode=selected|linked`：返回已保存模板版本/规则及请求范围（ID、名称、账号别名、版本、启用状态、当前关联），无 cURL/修订原文/响应。selected 为同平台候选，linked 为全部已关联请求。
+- `POST /api/platforms/{platformId}/templates/{id}/apply`：输入 `mode`、`templateVersion`、`targets:[{id,version}]`，每次 1～10000 个不重复请求。先校验范围、全部版本、模板版本；linked 还核对当前完整关联集合。任何冲突或写入失败整批回滚。
+- 应用只更新规则 JSON/关联与配置版本，不改名称、请求修订、启停、凭证暂停或日标记，不编排队列或发送 HTTP。复用 MP 原生 Wrapper 和乐观锁，不增加拼接 SQL 或通用 Db 工具。
+- 修改模板本身不会自动更新请求；前端提供“选择请求应用”和“应用到已关联请求”。`RequestTemplatesDialog` 只保留一个 ElDialog，在列表/编辑/应用视图之间切换；`TemplateApplyPanel` 只承载应用内容，不创建第二套遮罩或焦点陷阱。外框固定、内部内容滚动，取消/Escape 返回列表，提交中禁止关闭和重入。模板管理底部“关闭”复用与右上角相同的公开 `handleClose()`，退场结束后再更新 modelValue/清理列表，避免先显示空状态。预览中显示覆盖及改绑提示，主按钮即最终明确确认，不再叠加全局 MessageBox。旧请求没有来源记录时不猜测关联，首次明确选择后才能一键更新；异步预览按会话/序列拒绝迟到响应。

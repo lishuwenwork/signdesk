@@ -106,6 +106,51 @@ class HutoolExecutorTest {
     }
 
     @Test
+    void inverseFailureStillRequiresACompleteResponseAndNeverRetriesHttp() {
+        byte[] prefix = "{\"code\":99}".getBytes(StandardCharsets.UTF_8);
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/inverse-full", e -> {
+            attempts.incrementAndGet();
+            e.sendResponseHeaders(200, prefix.length);
+            e.getResponseBody().write(prefix);
+            e.close();
+        });
+        server.createContext("/inverse-partial", e -> {
+            attempts.incrementAndGet();
+            try {
+                e.sendResponseHeaders(200, 0);
+                e.getResponseBody().write(prefix);
+                e.getResponseBody().flush();
+                Thread.sleep(1500);
+            } catch (Exception ignored) {
+            } finally { e.close(); }
+        });
+        server.createContext("/inverse-large", e -> {
+            attempts.incrementAndGet();
+            byte[] body = new byte[HutoolRequestExecutor.MAX_RESPONSE_BYTES + 1];
+            java.util.Arrays.fill(body, (byte) ' ');
+            System.arraycopy(prefix, 0, body, 0, prefix.length);
+            e.sendResponseHeaders(200, body.length);
+            try { e.getResponseBody().write(body); }
+            catch (Exception ignored) { }
+            finally { e.close(); }
+        });
+        var rules = new ResultRules(new ResultRules.Match("code", 0, null), null, null, null, true);
+        var parser = new CurlParser();
+        var full = executor.execute(parser.parse("curl '" + url + "/inverse-full'").spec(), rules, 3);
+        assertEquals("failed", full.status());
+        assertTrue(full.response().complete());
+        var partial = executor.execute(parser.parse("curl '" + url + "/inverse-partial' --max-time 1").spec(), rules, 3);
+        assertEquals("unknown", partial.status());
+        assertFalse(partial.response().complete());
+        assertArrayEquals(prefix, partial.response().bodyBytes());
+        var large = executor.execute(parser.parse("curl '" + url + "/inverse-large'").spec(), rules, 3);
+        assertEquals("unknown", large.status());
+        assertTrue(large.response().truncated());
+        assertEquals(3, attempts.get());
+    }
+
+    @Test
     void capturesSuccessfulErrorAndEmptyBodiesWithoutChangingClassification() {
         byte[] json = "{\"code\":0,\"message\":\"响应体 fixture-only-secret\"}".getBytes(StandardCharsets.UTF_8);
         server.createContext("/response", e -> {

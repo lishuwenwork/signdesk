@@ -85,7 +85,12 @@ public record BackupFile(
             @JsonProperty(required = true) boolean authPaused,
             @JsonProperty(required = true) int sortOrder,
             @JsonProperty(required = true) ResultRules rules,
-            @JsonInclude(JsonInclude.Include.NON_NULL) String rawCurl) {
+            @JsonInclude(JsonInclude.Include.NON_NULL) String rawCurl,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String templateId) {
+        public RequestEntry(String id, String accountId, String name, boolean enabled, boolean authPaused,
+                int sortOrder, ResultRules rules, String rawCurl) {
+            this(id, accountId, name, enabled, authPaused, sortOrder, rules, rawCurl, null);
+        }
         @Override
         public String toString() {
             return "RequestEntry[redacted]";

@@ -229,6 +229,70 @@ class BackupValidationTest {
         }
     }
 
+    @Test
+    void inverseBackupOptionsDefaultOffAndInvalidCombinationsAreRejectedDuringPreview() {
+        var legacy = Json.map(Json.write(file("0")));
+        var legacyEntry = ((List<Map<String, Object>>) ((Map<String, Object>) legacy.get("payload")).get("requests")).getFirst();
+        ((Map<String, Object>) legacyEntry.get("rules")).remove("failureOnSuccessMismatch");
+        var decoded = decode(legacy);
+        assertFalse(decoded.payload().requests().getFirst().rules().failureOnSuccessMismatch());
+        assertNotNull(validator.validate(decoded));
+        for (String group : List.of("requests", "templates")) {
+            for (String invalid : List.of("null-value", "text", "no-success", "combined")) {
+                var map = Json.map(Json.write(file("0")));
+                var payload = (Map<String, Object>) map.get("payload");
+                var entry = ((List<Map<String, Object>>) payload.get("requests")).getFirst();
+                var rules = (Map<String, Object>) entry.get("rules");
+                rules.put("failureOnSuccessMismatch", true);
+                var success = (Map<String, Object>) rules.get("success");
+                switch (invalid) {
+                    case "null-value" -> success.put("value", null);
+                    case "text" -> { success.put("path", null); success.put("contains", "done"); }
+                    case "no-success" -> rules.put("success", null);
+                    case "combined" -> success.put("contains", "done");
+                }
+                if (group.equals("templates")) {
+                    entry.put("rules", ResultRules.defaults());
+                    payload.put("templates", List.of(Map.of("id", "4", "platformId", "1", "name", "模板", "rules", rules)));
+                }
+                assertThrows(ApiException.class, () -> validator.validate(decode(map)), group + ":" + invalid);
+            }
+        }
+        for (Object invalidFlag : List.of("true", 1, Map.of(), List.of())) {
+            var map = Json.map(Json.write(file("0")));
+            var entry = ((List<Map<String, Object>>) ((Map<String, Object>) map.get("payload")).get("requests")).getFirst();
+            ((Map<String, Object>) entry.get("rules")).put("failureOnSuccessMismatch", invalidFlag);
+            assertThrows(ApiException.class, () -> decode(map));
+        }
+    }
+
+    @Test
+    void templateAssociationsMustReferenceAnExistingTemplateInTheRequestsPlatform() {
+        var base = Json.map(Json.write(file("0")));
+        var payload = (Map<String, Object>) base.get("payload");
+        var request = ((List<Map<String, Object>>) payload.get("requests")).getFirst();
+        request.put("templateId", "4");
+        payload.put("templates", List.of(Map.of("id", "4", "platformId", "1", "name", "关联模板", "rules", ResultRules.defaults())));
+        assertNotNull(validator.validate(decode(base)));
+        assertEquals("4", decode(base).payload().requests().getFirst().templateId());
+        for (String id : List.of("", "0", "999", "9223372036854775808")) {
+            var invalid = Json.map(Json.write(base));
+            var entry = ((List<Map<String, Object>>) ((Map<String, Object>) invalid.get("payload")).get("requests")).getFirst();
+            entry.put("templateId", id);
+            assertThrows(ApiException.class, () -> validator.validate(decode(invalid)));
+        }
+        var cross = Json.map(Json.write(base));
+        var crossPayload = (Map<String, Object>) cross.get("payload");
+        var ps = (List<Map<String, Object>>) crossPayload.get("platforms");
+        ps.add(Map.of("id", "10", "name", "另一个平台", "note", "", "enabled", true, "sortOrder", 0));
+        var schedules = (List<Map<String, Object>>) crossPayload.get("schedules");
+        var schedule = new HashMap<>(schedules.getFirst());
+        schedule.put("platformId", "10");
+        schedules.add(schedule);
+        ((List<Map<String, Object>>) crossPayload.get("templates")).getFirst().put("platformId", "10");
+        assertThrows(ApiException.class, () -> validator.validate(decode(cross)));
+    }
+
     BackupFile decode(Map<String, Object> map) {
         return BackupCodec.read(
                         new ByteArrayInputStream(

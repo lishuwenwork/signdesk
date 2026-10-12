@@ -32,7 +32,7 @@ async function chooseTemplate(page, name) {
   await page.getByRole('option', { name, exact: true }).click()
 }
 
-test('platform rule templates fill requests without copying credentials or linking saved rules', async ({ page, request }, info) => {
+test('platform rule templates fill requests without copying credentials or automatically synchronizing saved rules', async ({ page, request }, info) => {
   test.setTimeout(90000)
   const platform = await createPlatform(request, '多接口模板平台', '模板账号 A')
   const other = await createPlatform(request, '另一个模板平台', '模板账号 B')
@@ -53,6 +53,7 @@ test('platform rule templates fill requests without copying credentials or linki
     await dialog.getByRole('textbox', { name: '模板名称', exact: true }).fill('领奖接口')
     await dialog.getByRole('textbox', { name: '成功字段路径', exact: true }).fill('')
     await dialog.getByRole('textbox', { name: '成功等于值', exact: true }).fill('')
+    await dialog.getByRole('button', { name: '展开已完成规则', exact: true }).click()
     await dialog.getByRole('textbox', { name: '已完成字段路径', exact: true }).fill('code')
     await dialog.getByRole('textbox', { name: '已完成等于值', exact: true }).fill('0')
     await dialog.getByRole('button', { name: '保存模板', exact: true }).click()
