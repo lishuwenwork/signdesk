@@ -19,12 +19,16 @@ public interface RunRecordMapper {
     long countLogs(
             @Param("platformId") String platformId,
             @Param("status") String status,
-            @Param("source") String source);
+            @Param("source") String source,
+            @Param("startAt") String startAt,
+            @Param("endBefore") String endBefore);
 
     List<RunLogVo> queryLogs(
             @Param("platformId") String platformId,
             @Param("status") String status,
             @Param("source") String source,
+            @Param("startAt") String startAt,
+            @Param("endBefore") String endBefore,
             @Param("size") int size,
             @Param("offset") long offset);
 

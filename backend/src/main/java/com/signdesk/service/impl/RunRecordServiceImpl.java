@@ -12,6 +12,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 
 @Service
@@ -36,17 +38,31 @@ public class RunRecordServiceImpl implements IRunRecordService {
 
     @Override
     public PageVo<RunLogVo> queryPageList(
-            String platformId, String status, String source, int page, int size) {
+            String platformId, String status, String source,
+            LocalDate startDate, LocalDate endDate, int page, int size) {
+        if (startDate != null && endDate != null && startDate.isAfter(endDate))
+            throw new ApiException("开始日期不能晚于结束日期");
         var paging = new PageQuery(page, size);
         platformId = blankToNull(platformId);
         status = blankToNull(status);
         source = blankToNull(source);
-        long total = records.countLogs(platformId, status, source);
+        String startAt = dateBoundary(startDate, false);
+        String endBefore = dateBoundary(endDate, true);
+        long total = records.countLogs(platformId, status, source, startAt, endBefore);
         return new PageVo<>(
-                records.queryLogs(platformId, status, source, paging.size(), paging.offset()),
+                records.queryLogs(platformId, status, source, startAt, endBefore,
+                        paging.size(), paging.offset()),
                 total,
                 paging.page(),
                 paging.size());
+    }
+
+    private String dateBoundary(LocalDate date, boolean nextDay) {
+        if (date == null) return null;
+        if (date.getYear() < 1 || date.getYear() > 9999)
+            throw new ApiException("日期年份须在 0001–9999 之间");
+        return (nextDay ? date.plusDays(1) : date)
+                .atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant().toString();
     }
 
     private String blankToNull(String value) {

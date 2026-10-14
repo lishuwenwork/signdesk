@@ -3,6 +3,7 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, periodic, labels, dateTime } from '../api'
 import { platformLocation } from '../requestPresentation'
+import { runDateRangeFromQuery, todayRunDateRange } from '../runDateFilter'
 import { useManualRefresh } from '../composables/useManualRefresh'
 import DeskIcon from '../components/DeskIcon.vue'
 import StatusChip from '../components/StatusChip.vue'
@@ -10,7 +11,17 @@ import RunDetailDrawer from '../components/RunDetailDrawer.vue'
 import BatchDetailDrawer from '../components/BatchDetailDrawer.vue'
 const route = useRoute(), router = useRouter()
 const platforms = ref([]), data = ref({ items:[],total:0 }), active = ref([]), error = ref(''), loading = ref(false), keyword = ref('')
-const filter = reactive({ platformId:String(route.query.platformId || ''),status:String(route.query.status || ''),source:String(route.query.source || ''),page:1,size:20 })
+const initialDateRange = runDateRangeFromQuery(route.query)
+const filter = reactive({ platformId:String(route.query.platformId || ''),status:String(route.query.status || ''),source:String(route.query.source || ''),startDate:initialDateRange[0] || '',endDate:initialDateRange[1] || '',page:1,size:20 })
+/** @type {import('vue').WritableComputedRef<string[] | null>} */
+const dateRange = computed({
+  get: () => filter.startDate && filter.endDate ? [filter.startDate,filter.endDate] : [],
+  set: value => Object.assign(filter,{startDate:value?.[0] || '',endDate:value?.[1] || ''}),
+})
+const hasFilters = computed(() => {
+  const [today] = todayRunDateRange()
+  return filter.platformId || filter.status || filter.source || keyword.value || filter.startDate !== today || filter.endDate !== today
+})
 const runDrawer = reactive({ visible:false,id:'' }), batchDrawer = reactive({ visible:false,id:'' })
 const rows = computed(() => { const q=keyword.value.trim().toLowerCase(); return data.value.items.filter(run => !q || [run.platformName,run.alias,run.requestName,run.safeSummary].some(value => String(value || '').toLowerCase().includes(q))) })
 let sequence=0, disposed=false
@@ -28,18 +39,21 @@ async function load() {
 const { refreshing, refresh } = useManualRefresh(load)
 periodic(load,3000)
 onUnmounted(()=> {disposed=true;sequence++;runDrawer.visible=false;batchDrawer.visible=false})
-function changeFilter() {filter.page=1;keyword.value='';load();router.replace({path:'/runs',query:{...(filter.platformId?{platformId:filter.platformId}:{}),...(filter.status?{status:filter.status}:{}),...(filter.source?{source:filter.source}:{})}})}
+function changeFilter() {filter.page=1;keyword.value='';load();router.replace({path:'/runs',query:{startDate:filter.startDate,endDate:filter.endDate,...(filter.platformId?{platformId:filter.platformId}:{}),...(filter.status?{status:filter.status}:{}),...(filter.source?{source:filter.source}:{})}})}
 function show(id) {Object.assign(runDrawer,{visible:true,id})}
 function showBatch(id) {Object.assign(batchDrawer,{visible:true,id})}
 watch(()=>route.query.runId,id=> {if(id) show(String(id))},{immediate:true})
-function reset(){Object.assign(filter,{platformId:'',status:'',source:'',page:1});changeFilter()}
+function reset(){dateRange.value=todayRunDateRange();Object.assign(filter,{platformId:'',status:'',source:'',page:1});changeFilter()}
 </script>
 <template>
   <div class="page-heading"><div><h1>执行记录</h1><p class="page-subtitle">每一次请求都有记录。先查看结果，再决定下一步。</p></div><el-button :disabled="refreshing" :aria-busy="refreshing" @click="refresh"><DeskIcon name="refresh" class="refresh-icon" :class="{ 'is-refreshing': refreshing }" />刷新记录</el-button></div>
   <el-alert v-if="error" :title="error" type="error" :closable="false" class="space-top" />
   <div v-if="active.length" class="banner"><DeskIcon name="clock" /><div class="banner-copy"><strong>{{ active.length }} 个活动批次</strong><p>请求由服务器持久队列执行，关闭网页不会取消。</p></div><el-dropdown trigger="click"><el-button size="small">查看队列</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item v-for="batch in active" :key="batch.id" @click="showBatch(batch.id)">{{ batch.name }} · {{ batch.done }}/{{ batch.total }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div>
   <section class="panel flush records-panel">
-    <div class="run-filters"><el-select v-model="filter.platformId" placeholder="全部平台" clearable aria-label="记录平台筛选" @change="changeFilter"><el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" /></el-select><el-select v-model="filter.status" placeholder="全部结果" clearable aria-label="记录结果筛选" @change="changeFilter"><el-option v-for="(name,key) in labels" :key="key" :label="name" :value="key" /></el-select><el-select v-model="filter.source" placeholder="全部来源" clearable aria-label="记录来源筛选" @change="changeFilter"><el-option label="手动执行" value="manual" /><el-option label="定时执行" value="auto" /></el-select><el-input v-model="keyword" clearable placeholder="搜索当前页记录" aria-label="搜索当前页记录"><template #prefix><DeskIcon name="search" /></template></el-input><button v-if="filter.platformId || filter.status || filter.source || keyword" class="text-button" @click="reset">重置筛选</button><span class="run-filter-note">HTTP 200 不自动代表业务成功</span></div>
+    <div class="run-filters">
+      <el-date-picker v-model="dateRange" type="daterange" format="YYYY-MM-DD" value-format="YYYY-MM-DD" range-separator="至" start-placeholder="开始日期" end-placeholder="结束日期" aria-label="记录日期区间（北京）" class="run-date-range" popper-class="run-date-popper" clearable unlink-panels @change="changeFilter" />
+      <el-select v-model="filter.platformId" placeholder="全部平台" clearable aria-label="记录平台筛选" @change="changeFilter"><el-option v-for="p in platforms" :key="p.id" :label="p.name" :value="p.id" /></el-select><el-select v-model="filter.status" placeholder="全部结果" clearable aria-label="记录结果筛选" @change="changeFilter"><el-option v-for="(name,key) in labels" :key="key" :label="name" :value="key" /></el-select><el-select v-model="filter.source" placeholder="全部来源" clearable aria-label="记录来源筛选" @change="changeFilter"><el-option label="手动执行" value="manual" /><el-option label="定时执行" value="auto" /></el-select><el-input v-model="keyword" clearable placeholder="搜索当前页记录" aria-label="搜索当前页记录"><template #prefix><DeskIcon name="search" /></template></el-input><button v-if="hasFilters" class="text-button" @click="reset">重置筛选</button><span class="run-filter-note">日期按北京时间 · HTTP 200 不自动代表业务成功</span>
+    </div>
     <div class="table-wrapper"><table class="log-table"><thead><tr><th>平台 / 账号</th><th>请求 / 来源</th><th>结果</th><th>HTTP / 耗时</th><th>摘要</th><th>时间（北京）</th><th>操作</th></tr></thead><tbody><tr v-for="run in rows" :key="run.id" :data-run-id="run.id"><td><RouterLink :to="platformLocation(run.platformId,run.requestId)" class="run-platform">{{ run.platformName }}</RouterLink><div class="cell-sub">{{ run.alias }}</div></td><td>{{ run.requestName }}<div class="cell-sub">版本 {{ run.requestRevision }} · {{ run.source === 'auto' ? '定时' : '手动' }}</div></td><td><StatusChip :status="run.status" /></td><td class="cell-number">{{ run.httpStatus ?? '—' }}<div class="cell-sub">{{ run.durationMs == null ? '—' : `${run.durationMs} ms` }}</div></td><td class="cell-summary">{{ run.safeSummary || '等待执行' }}</td><td class="cell-time">{{ dateTime(run.finishedAt || run.createdAt) }}</td><td><el-button text size="small" @click="show(run.id)">详情</el-button></td></tr></tbody></table></div>
     <div v-if="!rows.length" class="empty-state"><DeskIcon name="record" /><h3>{{ loading ? '正在读取执行记录…' : '暂无符合条件的执行记录' }}</h3><p v-if="keyword">搜索仅针对当前页，可以清除搜索或切换页码。</p></div>
     <div class="pagination"><span class="pagination-copy">共 {{ data.total }} 条记录{{ keyword ? ` · 当前页匹配 ${rows.length} 条` : '' }}</span><el-pagination v-model:current-page="filter.page" v-model:page-size="filter.size" :page-sizes="[10,20,50,100]" :total="data.total" layout="sizes, prev, pager, next" @size-change="filter.page=1;load()" @current-change="load" /></div>
@@ -53,6 +67,8 @@ function reset(){Object.assign(filter,{platformId:'',status:'',source:'',page:1}
 .run-filters { display: flex; flex-wrap: wrap; gap: 9px; align-items: center; padding: 17px 19px; border-bottom: 1px solid var(--line); }
 .run-filters .el-select { width: 145px; }
 .run-filters .el-input { width: 185px; }
+.run-filters :deep(.run-date-range) { width: 265px; flex-grow: 0; min-height: 34px; }
+.run-filters :deep(.el-range-input),.run-filters :deep(.el-range-separator) { font-size: 11px; }
 .run-filters :deep(.el-input__wrapper),.run-filters :deep(.el-select__wrapper) { min-height: 34px; font-size: 11px; }
 .run-filters .icon { width: 14px; height: 14px; }
 .run-filter-note { margin-left: auto; font-size: 10px; color: var(--muted); }
@@ -74,6 +90,11 @@ function reset(){Object.assign(filter,{platformId:'',status:'',source:'',page:1}
  .run-filters { padding: 13px; gap: 7px; }
  .run-filters .el-select { width: calc((100% - 14px)/3); }
  .run-filters .el-input { flex: 1; min-width: 150px; }
+ .run-filters :deep(.run-date-range) { width: 100%; min-width: 0; }
+ :global(.run-date-popper .el-date-range-picker) { width: calc(100vw - 24px); max-height: 70vh; overflow-y: auto; }
+ :global(.run-date-popper .el-picker-panel__body) { display: flex; flex-direction: column; min-width: 0; }
+ :global(.run-date-popper .el-date-range-picker__content) { width: 100%; }
+ :global(.run-date-popper .el-date-range-picker__content.is-left) { border-right: 0; border-bottom: 1px solid var(--el-border-color-lighter); }
  .run-filter-note { width: 100%; margin-left: 0; }
  .log-table { min-width: 0; }
  .log-table thead { display: none; }

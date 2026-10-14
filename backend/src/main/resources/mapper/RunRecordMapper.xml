@@ -18,6 +18,9 @@
     <if test="platformId != null and platformId != ''">AND b.platform_id=#{platformId}</if>
     <if test="status != null and status != ''">AND i.status=#{status}</if>
     <if test="source != null and source != ''">AND b.source=#{source}</if>
+    <!-- UTC whole-second boundaries avoid fractional timestamp ordering and SQLite rounding. -->
+    <if test="startAt != null">AND substr(COALESCE(i.finished_at,b.created_at),1,19) &gt;= substr(#{startAt},1,19)</if>
+    <if test="endBefore != null">AND substr(COALESCE(i.finished_at,b.created_at),1,19) &lt; substr(#{endBefore},1,19)</if>
   </where></sql>
   <select id="countLogs" resultType="long">SELECT COUNT(*) <include refid="logJoin"/> <include refid="filters"/></select>
   <select id="queryLogs" resultType="com.signdesk.domain.vo.RunLogVo">

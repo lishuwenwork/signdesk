@@ -5,6 +5,7 @@ import com.signdesk.domain.bo.*;
 import com.signdesk.domain.model.*;
 import com.signdesk.domain.vo.*;
 
+import java.time.LocalDate;
 import java.util.List;
 
 public interface IRunRecordService {
@@ -13,7 +14,8 @@ public interface IRunRecordService {
     BatchVo queryBatch(String id);
 
     PageVo<RunLogVo> queryPageList(
-            String platformId, String status, String source, int page, int size);
+            String platformId, String status, String source,
+            LocalDate startDate, LocalDate endDate, int page, int size);
 
     RunDetailVo queryById(String id);
 

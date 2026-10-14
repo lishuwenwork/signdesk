@@ -108,6 +108,22 @@ class WebContractIntegrationTest {
     }
 
     @Test
+    void runDateQueryAcceptsDateOnlyAndRejectsInvalidOrReversedRanges() throws Exception {
+        for (String query : java.util.List.of(
+                "startDate=2026-10-01&endDate=2026-10-14",
+                "startDate=2026-10-14&endDate=2026-10-14",
+                "startDate=&endDate=", "startDate=2026-10-14", "endDate=2026-10-14")) {
+            assertEquals(200, call("GET", "/runs?" + query, null).statusCode(), query);
+        }
+        for (String query : java.util.List.of(
+                "startDate=2026-10-15&endDate=2026-10-14",
+                "startDate=2026-02-30", "endDate=not-a-date",
+                "startDate=2026-10-14T12:00:00", "startDate=0000-01-01")) {
+            assertEquals(400, call("GET", "/runs?" + query, null).statusCode(), query);
+        }
+    }
+
+    @Test
     void settingsApiPersistsProxyAndValidatesBeforeWriting() throws Exception {
         var current = settings.query();
         var uri =

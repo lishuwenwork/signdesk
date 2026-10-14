@@ -50,6 +50,6 @@ public class SystemServiceImpl implements ISystemService {
                 counts.getNeedsAttention(),
                 records.active(),
                 schedules.queryList(),
-                records.queryPageList(null, null, null, 1, 6).items());
+                records.queryPageList(null, null, null, null, null, 1, 6).items());
     }
 }

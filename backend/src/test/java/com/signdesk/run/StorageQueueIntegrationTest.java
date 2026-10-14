@@ -442,6 +442,76 @@ class StorageQueueIntegrationTest {
     }
 
     @Test
+    void runDateRangeIncludesTheWholeBeijingDayWithoutRoundingAtMidnight() {
+        setup("/ok");
+        var day = LocalDate.parse("2026-10-14");
+        insertHistory(platform, request, "success", "2026-10-13T15:59:59.999999999Z", null);
+        String midnight = insertHistory(platform, request, "success", "2026-10-13T16:00:00Z", null);
+        String fractionalMidnight = insertHistory(platform, request, "success", "2026-10-13T16:00:00.000000001Z", null);
+        String lastNanosecond = insertHistory(platform, request, "success", "2026-10-14T15:59:59.999999999Z", null);
+        insertHistory(platform, request, "success", "2026-10-14T16:00:00Z", null);
+        insertHistory(platform, request, "success", "2026-10-14T16:00:00.000000001Z", null);
+        var result = records.queryPageList(platform, null, null, day, day, 1, 20);
+        assertEquals(3, result.total());
+        assertEquals(List.of(lastNanosecond, fractionalMidnight, midnight),
+                result.items().stream().map(RunLogVo::getId).toList());
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void runDateRangeUsesTheDisplayedFinishTimeAndFallsBackToCreationTime() {
+        setup("/ok");
+        var day = LocalDate.parse("2026-10-14");
+        String crossedMidnight = insertHistory(platform, request, "success",
+                "2026-10-13T15:59:00Z", "2026-10-13T16:00:01Z");
+        String unfinished = insertHistory(platform, request, "skipped", "2026-10-14T01:00:00Z", null);
+        insertHistory(platform, request, "success", "2026-10-14T01:00:00Z", "2026-10-14T16:00:00Z");
+        var result = records.queryPageList(platform, null, null, day, day, 1, 20);
+        assertEquals(2, result.total());
+        assertEquals(Set.of(crossedMidnight, unfinished),
+                result.items().stream().map(RunLogVo::getId).collect(java.util.stream.Collectors.toSet()));
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void runDateRangeCombinesWithOtherFiltersAndKeepsCountAndPagingConsistent() {
+        setup("/ok");
+        String otherPlatform = addPlatform("其他平台", "", true);
+        String otherRequest = addRequest(addAccount(otherPlatform, "其他账号", true), "其他请求",
+                "curl '" + url + "/ok'", ResultRules.defaults(), true);
+        insertHistory(otherPlatform, otherRequest, "success", "2026-10-14T01:00:00Z", null);
+        String first = insertHistory(platform, request, "success", "2026-10-13T16:00:00Z", null);
+        String second = insertHistory(platform, request, "success", "2026-10-14T15:59:59Z", null);
+        String third = insertHistory(platform, request, "success", "2026-10-15T15:59:59.999999999Z", null);
+        insertHistory(platform, request, "failed", "2026-10-14T01:00:00Z", null);
+        String auto = insertHistory(platform, request, "success", "2026-10-14T01:00:00Z", null);
+        jdbc.update("UPDATE run_batches SET source='auto' WHERE id=(SELECT batch_id FROM run_items WHERE id=?)", auto);
+        insertHistory(platform, request, "success", "2026-10-15T16:00:00Z", null);
+        var start = LocalDate.parse("2026-10-14");
+        var end = LocalDate.parse("2026-10-15");
+        var page1 = records.queryPageList(platform, "success", "manual", start, end, 1, 2);
+        var page2 = records.queryPageList(platform, "success", "manual", start, end, 2, 2);
+        assertEquals(3, page1.total());
+        assertEquals(3, page2.total());
+        assertEquals(List.of(third, second), page1.items().stream().map(RunLogVo::getId).toList());
+        assertEquals(List.of(first), page2.items().stream().map(RunLogVo::getId).toList());
+        assertEquals(6, records.queryPageList(platform, null, null, null, null, 1, 20).total());
+        assertEquals(2, records.queryPageList(platform, null, null, end, null, 1, 20).total());
+        assertEquals(4, records.queryPageList(platform, null, null, null, start, 1, 20).total());
+        assertEquals(0, hits.get());
+    }
+
+    @Test
+    void runDateRangeRejectsReversedDatesBeforeQuerying() {
+        var start = LocalDate.parse("2026-10-15");
+        var end = LocalDate.parse("2026-10-14");
+        var error = assertThrows(ApiException.class,
+                () -> records.queryPageList(null, null, null, start, end, 1, 20));
+        assertEquals(400, error.status());
+        assertEquals("开始日期不能晚于结束日期", error.getMessage());
+    }
+
+    @Test
     void platformTreeTodayStateUsesClockAndEachPlatformTimezoneWithCompletedPriority() {
         setup("/ok");
         String utcPlatform = addPlatform("UTC平台", "", true);
@@ -538,7 +608,7 @@ class StorageQueueIntegrationTest {
     void platformTreeLastRunOrdersUtcSecondsAndNanosecondsWithoutTimestampRounding() {
         setup("/ok");
         java.util.function.Supplier<List<String>> logOrder = () ->
-                records.queryPageList(platform, null, null, 1, 100).items().stream()
+                records.queryPageList(platform, null, null, null, null, 1, 100).items().stream()
                         .map(RunLogVo::getId).toList();
         String millis = insertHistory(platform, request, "success",
                 "2026-10-09T00:00:00.100Z", null);
@@ -695,7 +765,7 @@ class StorageQueueIntegrationTest {
                         byte[].class,
                         itemId(first)));
         assertFalse(
-                Json.write(records.queryPageList(null, null, null, 1, 20))
+                Json.write(records.queryPageList(null, null, null, null, null, 1, 20))
                         .contains("response-only-fixture-secret"));
         assertFalse(Json.write(records.queryBatch(first)).contains("response-only-fixture-secret"));
         assertFalse(Json.write(config(false)).contains("response-only-fixture-secret"));

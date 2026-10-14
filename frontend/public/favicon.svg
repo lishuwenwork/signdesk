@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 42 42">
+  <title>签行 SignDesk</title>
+  <path fill="#dcebb5" d="M14 0h14a14 14 0 0 1 14 14v14a14 14 0 0 1-14 14H4a4 4 0 0 1-4-4V14A14 14 0 0 1 14 0Z" />
+  <path d="m5 12 4 4L19 6" transform="translate(7.5 7.5) scale(1.125)" fill="none" stroke="#173b31" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
