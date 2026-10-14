@@ -4,7 +4,19 @@
 
 ## 1. 打包与上传
 
-在本地仓库根目录执行：
+### 前端构建
+
+需要单独构建前端时，在本地仓库根目录执行：
+
+```bash
+node scripts/build-frontend.mjs
+```
+
+脚本会安装依赖、运行前端单元测试、构建 `frontend/dist`，并替换 `backend/src/main/resources/static` 中的前端资源；不打包后端。若本地正在运行前端开发服务，打包前先停止它，避免 Windows 文件占用。
+
+### Docker 镜像打包
+
+在本地仓库根目录执行，**Maven 会自动调用上面的前端构建脚本，无需提前重复执行**：
 
 ```bash
 mvn -f backend/pom.xml -Pjib clean verify
@@ -70,7 +82,7 @@ http://服务器公网IP:10500
 
 ## 4. 更新
 
-1. 本地重新执行第 1 节的 Maven 打包命令，**只上传新 tar，不覆盖服务器 `.env`**：
+1. 本地重新执行第 1 节的 **Docker 镜像打包命令**（自动重新构建前端），**只上传新 tar，不覆盖服务器 `.env`**：
 
    ```powershell
    scp .\backend\target\jib\signdesk-0.1.0-linux-amd64.tar root@server:/root/signdesk/
